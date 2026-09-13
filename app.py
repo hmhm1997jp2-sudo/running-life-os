@@ -9,11 +9,9 @@ st.set_page_config(page_title="Running Life OS", page_icon="🏃", layout="wide"
 # 🎨 Custom CSS (토스/애플 라이크 모던 카드 UI)
 st.markdown("""
     <style>
-    /* 전체 메인 배경 및 가독성 최적화 */
     .main {
         background-color: #f8fafc;
     }
-    /* 카드 디자인 */
     .css-card {
         background-color: #ffffff;
         border-radius: 16px;
@@ -22,7 +20,6 @@ st.markdown("""
         border: 1px solid #e2e8f0;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
     }
-    /* 탭 스타일링 */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
         background-color: #e2e8f0;
@@ -40,7 +37,6 @@ st.markdown("""
         color: #0284c7 !important;
         box-shadow: 0 2px 6px rgba(0,0,0,0.05);
     }
-    /* 메트릭 폰트 커스텀 */
     div[data-testid="stMetricValue"] {
         font-size: 1.8rem !important;
         font-weight: 700 !important;
@@ -51,7 +47,6 @@ st.markdown("""
         color: #64748b !important;
         font-weight: 600 !important;
     }
-    /* 버튼 커스텀 */
     .stButton>button {
         border-radius: 10px !important;
         background-color: #0284c7 !important;
@@ -450,12 +445,30 @@ with tab_admin:
 
     with sub_a3:
         st.markdown("### 📥 DB 백업")
+        st.caption("초기화 전 필요한 데이터를 미리 엑셀 파일로 백업 받아두세요.")
         if os.path.exists(DB_FILE):
             with open(DB_FILE, "rb") as f:
-                st.download_button("💾 전체 데이터 (.xlsx) 백업 다운로드", f, file_name=f"Running_Life_OS_Backup_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                st.download_button(
+                    "💾 전체 데이터 (.xlsx) 백업 다운로드", 
+                    f, 
+                    file_name=f"Running_Life_OS_Backup_{datetime.now().strftime('%Y%m%d')}.xlsx", 
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                    use_container_width=True
+                )
+                
         st.divider()
-        st.markdown("### 🚨 DB 리셋")
-        if st.button("🚨 데이터베이스 초기화", use_container_width=True):
-            init_db(reset=True)
-            st.success("리셋 완료!")
-            st.rerun()
+        st.markdown("### 🚨 데이터베이스 초기화 (위험 영역)")
+        st.error("⚠️ **주의!** 이 작업은 저장된 모든 운동, 신발, 프로젝트, 컨디션 기록을 **영구적으로 삭제**합니다.")
+        
+        # 🛡️ 2단계 안전 장치 (Check Box + Text Entry)
+        confirm_check = st.checkbox("데이터가 영구적으로 삭제됨을 충분히 이해했으며 이에 동의합니다.")
+        confirm_text = st.text_input("초기화를 진행하려면 아래에 [ 초기화 ] 라고 정확히 입력하세요.")
+        
+        # 조건이 충족되어야만 실행 가능한 안전 버튼
+        if confirm_check and confirm_text.strip() == "초기화":
+            if st.button("🚨 위 조건을 확인했으며 데이터베이스를 완전 초기화합니다", type="primary", use_container_width=True):
+                init_db(reset=True)
+                st.success("데이터베이스가 성공적으로 리셋되었습니다.")
+                st.rerun()
+        else:
+            st.button("🚨 데이터베이스 초기화 (동의 및 단어 입력 필요)", disabled=True, use_container_width=True)
