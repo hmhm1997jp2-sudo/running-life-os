@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import os
+from streamlit_gsheets import GSheetsConnection
 
 st.set_page_config(page_title="Running Life OS", page_icon="🏃", layout="wide", initial_sidebar_state="collapsed")
 
@@ -30,79 +30,41 @@ def check_password():
 if not check_password():
     st.stop()
 
-# 🏃 메인 시스템 구동
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_FILE = os.path.join(BASE_DIR, "Running Life OS Database.xlsx")
+# -----------------------------------------------------------------------------
+# 📊 Google Sheets 실시간 연동 파이프라인 (데이터 영구 보전)
+# -----------------------------------------------------------------------------
+def get_connection():
+    # Secrets에 등록된 GSHEETS_URL 연결
+    return st.connection("gsheets", type=GSheetsConnection)
 
-def init_db():
-    required_sheets = ["Athlete", "Projects", "Workouts", "DailyStatus", "Metrics", "Shoes", "Races", "CoachNotes", "PersonalRecords", "TrainingPlans"]
-    need_init = False
-    if not os.path.exists(DB_FILE):
-        need_init = True
-    else:
-        try:
-            excel_obj = pd.ExcelFile(DB_FILE)
-            if not all(sheet in excel_obj.sheet_names for sheet in required_sheets):
-                need_init = True
-        except Exception:
-            need_init = True
+def load_data(sheet_name):
+    conn = get_connection()
+    try:
+        url = st.secrets.get("GSHEETS_URL", "")
+        df = conn.read(spreadsheet=url, worksheet=sheet_name, ttl="0s")
+        return df.dropna(how="all") if df is not None else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
-    if need_init:
-        with pd.ExcelWriter(DB_FILE, engine='openpyxl') as writer:
-            pd.DataFrame([{"AthleteID": "ATH-001", "BirthDate": "1997-10-28", "HeightCm": 180, "CurrentWeightKg": 85.0, "StartWeightKg": 115.0}]).to_excel(writer, sheet_name="Athlete", index=False)
-            pd.DataFrame([{"ProjectID": "PRJ-001", "ProjectName": "Road to 10K 50", "Status": "ACTIVE", "GoalType": "Time Trial", "GoalValue": "10km Sub-50", "StartDate": "2026-09-01", "TargetDate": "2026-11-30", "Description": "10k 50분 진입 프로젝트"}]).to_excel(writer, sheet_name="Projects", index=False)
-            pd.DataFrame(columns=["WorkoutID", "ProjectID", "WorkoutDate", "WorkoutType", "DistanceKm", "DurationMinutes", "AvgPace", "AvgHeartRate", "AvgPower", "Temperature", "ShoeID", "RPE", "LegFatigue", "CardioFatigue", "Notes"]).to_excel(writer, sheet_name="Workouts", index=False)
-            pd.DataFrame(columns=["StatusID", "StatusDate", "TrainingReadiness", "BodyBattery", "HRVStatus", "Notes"]).to_excel(writer, sheet_name="DailyStatus", index=False)
-            pd.DataFrame([{"MetricID": "MET-001", "MetricDate": "2026-09-13", "WeightKg": 85.0, "VO2Max": 48.4, "LTPace": "4:58", "LTHR": 161, "LTPower": 404}]).to_excel(writer, sheet_name="Metrics", index=False)
-            pd.DataFrame([
-                {"ShoeID": "SHOE-001", "ShoeName": "Nike Zoom Fly 6", "Brand": "Nike", "PurchaseDate": "2026-01-10", "DistanceKm": 120.5, "Status": "ACTIVE", "Category": "Tempo"},
-                {"ShoeID": "SHOE-002", "ShoeName": "Saucony Ride 19", "Brand": "Saucony", "PurchaseDate": "2026-03-15", "DistanceKm": 210.0, "Status": "ACTIVE", "Category": "Daily"},
-                {"ShoeID": "SHOE-003", "ShoeName": "Saucony Triumph 23", "Brand": "Saucony", "PurchaseDate": "2026-05-20", "DistanceKm": 85.0, "Status": "ACTIVE", "Category": "Long Run"}
-            ]).to_excel(writer, sheet_name="Shoes", index=False)
-            pd.DataFrame(columns=["RaceID", "ProjectID", "RaceDate", "RaceName", "Distance", "GoalTime", "ActualTime", "ShoeID", "ResultStatus"]).to_excel(writer, sheet_name="Races", index=False)
-            pd.DataFrame([{"NoteID": "NOTE-001", "ProjectID": "Road to 10K 50", "NoteDate": "2026-09-13", "Category": "Weekly", "NoteText": "Garmin VO2max 48.4 유지 중. 유산소 기반 양호."}]).to_excel(writer, sheet_name="CoachNotes", index=False)
-            pd.DataFrame([
-                {"Category": "1km", "TimeOrDist": "4:15", "AchievedDate": "2026-08-10", "Notes": "트랙 인터벌"},
-                {"Category": "5km", "TimeOrDist": "23:45", "AchievedDate": "2026-08-20", "Notes": "TT 측정"},
-                {"Category": "10km", "TimeOrDist": "52:10", "AchievedDate": "2026-09-01", "Notes": "로드 TT"},
-                {"Category": "Half Marathon", "TimeOrDist": "1:58:30", "AchievedDate": "2026-05-15", "Notes": "연습 하프"},
-                {"Category": "Full Marathon", "TimeOrDist": "-", "AchievedDate": "-", "Notes": "도전 예정"},
-                {"Category": "Longest Run", "TimeOrDist": "25.0 km", "AchievedDate": "2026-07-12", "Notes": "LSD 훈련"}
-            ]).to_excel(writer, sheet_name="PersonalRecords", index=False)
-            pd.DataFrame([
-                {"PlanID": "PLAN-001", "PlanDate": datetime.now().strftime("%Y-%m-%d"), "GarminPlan": "Threshold Run (40분 @ 5:00/km)", "CopilotPlan": "Easy Zone 2 Run (50분 @ 5:50/km)", "SelectedPlan": "CopilotPlan", "Status": "ADOPTED"}
-            ]).to_excel(writer, sheet_name="TrainingPlans", index=False)
-
-init_db()
-
-def load_data(sheet):
-    init_db()
-    return pd.read_excel(DB_FILE, sheet_name=sheet)
-
-def write_sheet(sheet, df):
-    excel_obj = pd.ExcelFile(DB_FILE)
-    all_sheets = {}
-    for s_name in excel_obj.sheet_names:
-        if s_name == sheet:
-            all_sheets[s_name] = df
-        else:
-            all_sheets[s_name] = pd.read_excel(DB_FILE, sheet_name=s_name)
-            
-    with pd.ExcelWriter(DB_FILE, engine='openpyxl') as writer:
-        for s_name, s_df in all_sheets.items():
-            s_df.to_excel(writer, sheet_name=s_name, index=False)
-
-def save_data(sheet, new_df):
-    old_df = load_data(sheet)
+def save_data(sheet_name, new_df):
+    conn = get_connection()
+    url = st.secrets.get("GSHEETS_URL", "")
+    old_df = load_data(sheet_name)
     updated = pd.concat([old_df, new_df], ignore_index=True)
-    write_sheet(sheet, updated)
+    conn.update(spreadsheet=url, worksheet=sheet_name, data=updated)
+    st.cache_data.clear()
+
+def write_sheet(sheet_name, full_df):
+    conn = get_connection()
+    url = st.secrets.get("GSHEETS_URL", "")
+    conn.update(spreadsheet=url, worksheet=sheet_name, data=full_df)
+    st.cache_data.clear()
 
 # 상단 헤더 & 접속 모드 제어
 col_title, col_view, col_logout = st.columns([3, 2, 1])
 with col_title:
     st.title("🏃 Running Life OS")
 with col_view:
-    # 모바일/PC 뷰를 사용자가 스위치하거나 기기 상태에 따라 맞춤 전환하는 옵션
     view_mode = st.radio("📱💻 View Mode", ["📱 Mobile View", "💻 PC Desktop View"], horizontal=True)
 with col_logout:
     if st.button("🔒 Lock"):
@@ -141,24 +103,19 @@ if menu == "🏠 Dashboard (홈)":
     m_latest = df_met.iloc[-1] if not df_met.empty else {}
     active_proj = df_proj[df_proj["Status"] == "ACTIVE"] if not df_proj.empty else pd.DataFrame()
 
-    # 📱 [Mobile View]: 세로형 터치 스크롤 및 간결한 수치 중심 배치
     if view_mode == "📱 Mobile View":
         st.subheader("📱 Today's Mobile Snapshot")
-        
-        # Garmin 컨디션
         m1, m2 = st.columns(2)
         m1.metric("Body Battery", latest_daily.get("BodyBattery", "-"))
         m2.metric("Readiness", latest_daily.get("TrainingReadiness", "-"))
         st.caption(f"💙 HRV Status: **{latest_daily.get('HRVStatus', '-')}**")
         st.divider()
 
-        # 주요 정량 지표 (VO2max 등)
         st.subheader("⚡ Performance Metrics")
         st.markdown(f"🏃 **VO₂max**: `{m_latest.get('VO2Max', '-')}` | **LT Pace**: `{m_latest.get('LTPace', '-')}`")
         st.markdown(f"💙 **LT HR**: `{m_latest.get('LTHR', '-')} bpm` | ⚡ **LT Power**: `{m_latest.get('LTPower', '-')}W`")
         st.divider()
 
-        # 진행 중 프로젝트
         st.subheader("🎯 Active Project")
         if not active_proj.empty:
             p = active_proj.iloc[0]
@@ -167,7 +124,6 @@ if menu == "🏠 Dashboard (홈)":
             st.info("등록된 활성 프로젝트가 없습니다.")
         st.divider()
 
-        # 최근 훈련 Top 3 (카드 형태)
         st.subheader("🏃 Recent Workouts")
         if not df_work.empty:
             for idx, row in df_work.tail(3).iloc[::-1].iterrows():
@@ -175,11 +131,8 @@ if menu == "🏠 Dashboard (홈)":
         else:
             st.caption("기록된 훈련이 없습니다.")
 
-    # 💻 [PC Desktop View]: 3열 메인 그리드 및 시각화 테이블 통합 배치
     else:
         st.subheader("💻 PC Master Operations Dashboard")
-        
-        # Upper Grid: 3개 분할 섹션
         pc_col1, pc_col2, pc_col3 = st.columns(3)
         
         with pc_col1:
@@ -203,8 +156,6 @@ if menu == "🏠 Dashboard (홈)":
                 st.info("No active project.")
                 
         st.divider()
-        
-        # Lower Grid: 넓은 화면 전용 훈련 이력 테이블 및 통계 요약
         st.markdown("#### 📋 Recent Workouts & Analysis Table")
         if not df_work.empty:
             st.dataframe(df_work.tail(10).iloc[::-1], use_container_width=True)
@@ -273,7 +224,7 @@ elif menu == "📅 Dual-Plan 훈련 계획":
                     "SelectedPlan": choice_code,
                     "Status": "ADOPTED"
                 }]))
-                st.success("오늘의 선택된 훈련 계획이 확정되었습니다!")
+                st.success("구글 시트에 성공적으로 동기화되었습니다!")
                 st.rerun()
 
 # -----------------------------------------------------------------------------
@@ -335,13 +286,13 @@ elif menu == "🏃 훈련 이력 조회 & 수정":
                     df_work.loc[df_work["WorkoutID"] == target_id, "RPE"] = edit_rpe
                     df_work.loc[df_work["WorkoutID"] == target_id, "Notes"] = edit_notes
                     write_sheet("Workouts", df_work)
-                    st.success("수정 완료!")
+                    st.success("구글 시트에 수정사항이 반영되었습니다!")
                     st.rerun()
                     
                 if btn_del:
                     df_work = df_work[df_work["WorkoutID"] != target_id]
                     write_sheet("Workouts", df_work)
-                    st.warning("삭제 완료!")
+                    st.warning("훈련 삭제 완료!")
                     st.rerun()
 
         st.divider()
@@ -377,7 +328,8 @@ elif menu == "📝 데이터 상세 입력":
                     "StatusID": f"DS-{datetime.now().strftime('%Y%m%d%H%M')}",
                     "StatusDate": d_date, "TrainingReadiness": tr, "BodyBattery": bb, "HRVStatus": hrv, "Notes": note
                 }]))
-                st.success("저장 완료!")
+                st.success("구글 시트에 영구 저장 완료!")
+                st.rerun()
 
     with tab2:
         df_p = load_data("Projects")
@@ -414,7 +366,7 @@ elif menu == "📝 데이터 상세 입력":
                     "AvgPower": power, "Temperature": temp, "ShoeID": shoe, "RPE": rpe,
                     "LegFatigue": leg_fatigue, "CardioFatigue": cardio_fatigue, "Notes": w_note
                 }]))
-                st.success("저장 완료!")
+                st.success("구글 시트에 저장 완료!")
                 st.rerun()
                 
     with tab3:
@@ -442,7 +394,7 @@ elif menu == "🏆 주요 기록 (PR) & 지표":
     df_pr = load_data("PersonalRecords")
     
     if view_mode == "💻 PC Desktop View":
-        cols = st.columns(len(df_pr))
+        cols = st.columns(len(df_pr)) if not df_pr.empty else []
         for idx, row in df_pr.iterrows():
             cols[idx % len(cols)].metric(f"🥇 {row['Category']}", row['TimeOrDist'], f"달성: {row['AchievedDate']}")
     else:
@@ -459,7 +411,7 @@ elif menu == "🏆 주요 기록 (PR) & 지표":
     
     with st.expander("✏️ 주요 기록 (PR) 업데이트"):
         with st.form("pr_update_form"):
-            cat_select = st.selectbox("기록 항목 선택", df_pr["Category"].tolist())
+            cat_select = st.selectbox("기록 항목 선택", df_pr["Category"].tolist() if not df_pr.empty else ["1km", "5km", "10km", "Half Marathon", "Full Marathon", "Longest Run"])
             new_val = st.text_input("새 기록 (예: 49:30 또는 30 km)", "")
             new_date = st.date_input("달성 일자", datetime.now())
             new_notes = st.text_input("비고/대회명", "")
@@ -512,7 +464,7 @@ elif menu == "📥 Garmin CSV/엑셀 가져오기":
                         })
                     
                     save_data("Workouts", pd.DataFrame(new_rows))
-                    st.success(f"🎉 총 {len(new_rows)}건 추가 완료!")
+                    st.success(f"🎉 총 {len(new_rows)}건 구글 시트에 자동 추가 완료!")
                     st.rerun()
         except Exception as e:
             st.error(f"오류 발생: {e}")
