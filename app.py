@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 import os
 
-st.set_page_config(page_title="Running Life OS", page_icon="🏃", layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Running Life OS", page_icon="🏃", layout="wide", initial_sidebar_state="collapsed")
 
 # 🔒 보안 처리
 def check_password():
@@ -13,7 +13,7 @@ def check_password():
         return True
 
     st.title("🔒 Running Life OS Access Control")
-    st.caption("본 시스템은 개인 보호용 시스템입니다. 비밀번호를 입력하세요.")
+    st.caption("개인 보호용 Running Life OS 시스템입니다. 비밀번호를 입력하세요.")
     user_password = st.text_input("🔑 Password", type="password")
     
     if st.button("Access OS", use_container_width=True):
@@ -35,7 +35,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "Running Life OS Database.xlsx")
 
 def init_db():
-    required_sheets = ["Athlete", "Projects", "Workouts", "DailyStatus", "Metrics", "Shoes", "Races", "CoachNotes"]
+    required_sheets = ["Athlete", "Projects", "Workouts", "DailyStatus", "Metrics", "Shoes", "Races", "CoachNotes", "PersonalRecords", "TrainingPlans"]
     need_init = False
     if not os.path.exists(DB_FILE):
         need_init = True
@@ -61,6 +61,17 @@ def init_db():
             ]).to_excel(writer, sheet_name="Shoes", index=False)
             pd.DataFrame(columns=["RaceID", "ProjectID", "RaceDate", "RaceName", "Distance", "GoalTime", "ActualTime", "ShoeID", "ResultStatus"]).to_excel(writer, sheet_name="Races", index=False)
             pd.DataFrame([{"NoteID": "NOTE-001", "ProjectID": "Road to 10K 50", "NoteDate": "2026-09-13", "Category": "Weekly", "NoteText": "Garmin VO2max 48.4 유지 중. 유산소 기반 양호."}]).to_excel(writer, sheet_name="CoachNotes", index=False)
+            pd.DataFrame([
+                {"Category": "1km", "TimeOrDist": "4:15", "AchievedDate": "2026-08-10", "Notes": "트랙 인터벌"},
+                {"Category": "5km", "TimeOrDist": "23:45", "AchievedDate": "2026-08-20", "Notes": "TT 측정"},
+                {"Category": "10km", "TimeOrDist": "52:10", "AchievedDate": "2026-09-01", "Notes": "로드 TT"},
+                {"Category": "Half Marathon", "TimeOrDist": "1:58:30", "AchievedDate": "2026-05-15", "Notes": "연습 하프"},
+                {"Category": "Full Marathon", "TimeOrDist": "-", "AchievedDate": "-", "Notes": "도전 예정"},
+                {"Category": "Longest Run", "TimeOrDist": "25.0 km", "AchievedDate": "2026-07-12", "Notes": "LSD 훈련"}
+            ]).to_excel(writer, sheet_name="PersonalRecords", index=False)
+            pd.DataFrame([
+                {"PlanID": "PLAN-001", "PlanDate": datetime.now().strftime("%Y-%m-%d"), "GarminPlan": "Threshold Run (40분 @ 5:00/km)", "CopilotPlan": "Easy Zone 2 Run (50분 @ 5:50/km)", "SelectedPlan": "CopilotPlan", "Status": "ADOPTED"}
+            ]).to_excel(writer, sheet_name="TrainingPlans", index=False)
 
 init_db()
 
@@ -69,7 +80,6 @@ def load_data(sheet):
     return pd.read_excel(DB_FILE, sheet_name=sheet)
 
 def write_sheet(sheet, df):
-    # 특정 시트 전체 덮어쓰기 (수정/삭제용)
     excel_obj = pd.ExcelFile(DB_FILE)
     all_sheets = {}
     for s_name in excel_obj.sheet_names:
@@ -87,10 +97,13 @@ def save_data(sheet, new_df):
     updated = pd.concat([old_df, new_df], ignore_index=True)
     write_sheet(sheet, updated)
 
-# 상단 헤더
-col_title, col_logout = st.columns([3, 1])
+# 상단 헤더 & 접속 모드 제어
+col_title, col_view, col_logout = st.columns([3, 2, 1])
 with col_title:
     st.title("🏃 Running Life OS")
+with col_view:
+    # 모바일/PC 뷰를 사용자가 스위치하거나 기기 상태에 따라 맞춤 전환하는 옵션
+    view_mode = st.radio("📱💻 View Mode", ["📱 Mobile View", "💻 PC Desktop View"], horizontal=True)
 with col_logout:
     if st.button("🔒 Lock"):
         st.session_state["authenticated"] = False
@@ -98,69 +111,258 @@ with col_logout:
 
 menu = st.selectbox(
     "📌 메뉴 이동", 
-    ["📱 홈 (대시보드)", "📝 데이터 입력 (상세)", "🎯 프로젝트 관리 및 수정", "👟 신발 관리 & 훈련 이력", "📊 주요 성능 지표 (Garmin)", "🤖 코치 노트"],
+    [
+        "🏠 Dashboard (홈)", 
+        "📊 러닝 통계 분석", 
+        "📅 Dual-Plan 훈련 계획", 
+        "🏃 훈련 이력 조회 & 수정", 
+        "📝 데이터 상세 입력", 
+        "🏆 주요 기록 (PR) & 지표", 
+        "📥 Garmin CSV/엑셀 가져오기", 
+        "🎯 프로젝트 관리", 
+        "👟 신발 관리 & 이력", 
+        "🤖 코치 노트"
+    ],
     index=0
 )
 
 st.divider()
 
 # -----------------------------------------------------------------------------
-# 1. 📱 홈 대시보드
+# 1. 🏠 Dashboard (모바일 뷰 vs PC 뷰 분리 레이아웃)
 # -----------------------------------------------------------------------------
-if menu == "📱 홈 (대시보드)":
-    st.subheader("🔋 오늘의 컨디션 지표")
+if menu == "🏠 Dashboard (홈)":
     df_daily = load_data("DailyStatus")
-    latest_daily = df_daily.iloc[-1] if not df_daily.empty else {}
-    
-    c1, c2 = st.columns(2)
-    c1.metric("Body Battery", latest_daily.get("BodyBattery", "-"))
-    c2.metric("Readiness", latest_daily.get("TrainingReadiness", "-"))
-    st.caption(f"💙 HRV Status: **{latest_daily.get('HRVStatus', '-')}**")
-    
-    st.divider()
-    
-    # Garmin 주요 픽 지표 하이라이트 (R-005)
-    st.subheader("⚡ 최신 역치 & 퍼포먼스 지표")
     df_met = load_data("Metrics")
-    if not df_met.empty:
-        m_latest = df_met.iloc[-1]
-        m1, m2, m3 = st.columns(3)
-        m1.metric("VO₂max", f"{m_latest.get('VO2Max', '-')}")
-        m2.metric("LT Pace", f"{m_latest.get('LTPace', '-')}")
-        m3.metric("LT HR", f"{m_latest.get('LTHR', '-')} bpm")
-        st.caption(f"⚡ LT Power: **{m_latest.get('LTPower', '-')}W** | ⚖️ 체중: **{m_latest.get('WeightKg', '-')}kg**")
-        
-    st.divider()
-    
-    st.subheader("🎯 Active Project")
     df_proj = load_data("Projects")
-    active_proj = df_proj[df_proj["Status"] == "ACTIVE"] if not df_proj.empty else pd.DataFrame()
-    if not active_proj.empty:
-        p = active_proj.iloc[0]
-        st.success(f"**{p['ProjectName']}**\n\n🎯 목표: {p['GoalValue']} | Target: {p['TargetDate']}")
-    else:
-        st.info("등록된 활성 프로젝트가 없습니다.")
-        
-    st.divider()
-    
-    st.subheader("🏃 최근 훈련 (Top 3)")
     df_work = load_data("Workouts")
-    if not df_work.empty:
-        for idx, row in df_work.tail(3).iloc[::-1].iterrows():
-            with st.container():
-                st.markdown(f"**📅 {row['WorkoutDate']} | {row['WorkoutType']} ({row['ProjectID']})**")
-                st.markdown(f"📏 **{row['DistanceKm']}km** ({row['DurationMinutes']}분) | ⏱️ **{row['AvgPace']}** | 👟 {row['ShoeID']}")
-                if pd.notnull(row['Notes']) and row['Notes'] != "":
-                    st.caption(f"💬 코치/기록 메모: {row['Notes']}")
-                st.divider()
+    
+    latest_daily = df_daily.iloc[-1] if not df_daily.empty else {}
+    m_latest = df_met.iloc[-1] if not df_met.empty else {}
+    active_proj = df_proj[df_proj["Status"] == "ACTIVE"] if not df_proj.empty else pd.DataFrame()
+
+    # 📱 [Mobile View]: 세로형 터치 스크롤 및 간결한 수치 중심 배치
+    if view_mode == "📱 Mobile View":
+        st.subheader("📱 Today's Mobile Snapshot")
+        
+        # Garmin 컨디션
+        m1, m2 = st.columns(2)
+        m1.metric("Body Battery", latest_daily.get("BodyBattery", "-"))
+        m2.metric("Readiness", latest_daily.get("TrainingReadiness", "-"))
+        st.caption(f"💙 HRV Status: **{latest_daily.get('HRVStatus', '-')}**")
+        st.divider()
+
+        # 주요 정량 지표 (VO2max 등)
+        st.subheader("⚡ Performance Metrics")
+        st.markdown(f"🏃 **VO₂max**: `{m_latest.get('VO2Max', '-')}` | **LT Pace**: `{m_latest.get('LTPace', '-')}`")
+        st.markdown(f"💙 **LT HR**: `{m_latest.get('LTHR', '-')} bpm` | ⚡ **LT Power**: `{m_latest.get('LTPower', '-')}W`")
+        st.divider()
+
+        # 진행 중 프로젝트
+        st.subheader("🎯 Active Project")
+        if not active_proj.empty:
+            p = active_proj.iloc[0]
+            st.success(f"**{p['ProjectName']}**\n\n🎯 목표: {p['GoalValue']}\n🗓️ 기한: ~{p.get('TargetDate', '-')}")
+        else:
+            st.info("등록된 활성 프로젝트가 없습니다.")
+        st.divider()
+
+        # 최근 훈련 Top 3 (카드 형태)
+        st.subheader("🏃 Recent Workouts")
+        if not df_work.empty:
+            for idx, row in df_work.tail(3).iloc[::-1].iterrows():
+                st.info(f"**{row['WorkoutDate']} | {row['WorkoutType']}** ({row['DistanceKm']}km / {row['AvgPace']})\n\n💬 {row.get('Notes', '')}")
+        else:
+            st.caption("기록된 훈련이 없습니다.")
+
+    # 💻 [PC Desktop View]: 3열 메인 그리드 및 시각화 테이블 통합 배치
     else:
-        st.caption("기록된 운동이 없습니다. '데이터 입력' 메뉴에서 작성하세요.")
+        st.subheader("💻 PC Master Operations Dashboard")
+        
+        # Upper Grid: 3개 분할 섹션
+        pc_col1, pc_col2, pc_col3 = st.columns(3)
+        
+        with pc_col1:
+            st.markdown("#### 🔋 Daily Condition")
+            st.metric("Body Battery", latest_daily.get("BodyBattery", "-"))
+            st.metric("Training Readiness", latest_daily.get("TrainingReadiness", "-"))
+            st.caption(f"HRV: {latest_daily.get('HRVStatus', '-')}")
+            
+        with pc_col2:
+            st.markdown("#### ⚡ Performance Thresholds")
+            st.metric("VO₂max", f"{m_latest.get('VO2Max', '-')}")
+            st.metric("LT Pace / HR", f"{m_latest.get('LTPace', '-')} / {m_latest.get('LTHR', '-')}bpm")
+            st.caption(f"Power: {m_latest.get('LTPower', '-')}W | Weight: {m_latest.get('WeightKg', '-')}kg")
+            
+        with pc_col3:
+            st.markdown("#### 🎯 Active Project")
+            if not active_proj.empty:
+                p = active_proj.iloc[0]
+                st.success(f"**{p['ProjectName']}**\n\n- Goal: {p['GoalValue']}\n- Target Date: {p.get('TargetDate', '-')}")
+            else:
+                st.info("No active project.")
+                
+        st.divider()
+        
+        # Lower Grid: 넓은 화면 전용 훈련 이력 테이블 및 통계 요약
+        st.markdown("#### 📋 Recent Workouts & Analysis Table")
+        if not df_work.empty:
+            st.dataframe(df_work.tail(10).iloc[::-1], use_container_width=True)
+        else:
+            st.caption("기록된 운동이 없습니다.")
 
 # -----------------------------------------------------------------------------
-# 2. 📝 데이터 입력 (상세 풀 스펙)
+# 2. 📊 러닝 통계 분석
 # -----------------------------------------------------------------------------
-elif menu == "📝 데이터 입력 (상세)":
-    tab1, tab2, tab3 = st.tabs(["일일 상태", "운동 기록 (상세)", "Garmin 지표"])
+elif menu == "📊 러닝 통계 분석":
+    st.subheader("📊 러닝 통계 및 시각화 리포트")
+    df_work = load_data("Workouts")
+    
+    if not df_work.empty:
+        df_work['WorkoutDate'] = pd.to_datetime(df_work['WorkoutDate'])
+        
+        if view_mode == "💻 PC Desktop View":
+            c_chart1, c_chart2 = st.columns(2)
+            with c_chart1:
+                st.markdown("### 📅 월별 누적 거리 (km)")
+                df_work['YearMonth'] = df_work['WorkoutDate'].dt.to_period('M').astype(str)
+                st.bar_chart(df_work.groupby('YearMonth')['DistanceKm'].sum())
+            with c_chart2:
+                st.markdown("### 🏃 훈련 유형별 비중")
+                st.bar_chart(df_work.groupby('WorkoutType')['DistanceKm'].sum())
+                
+            st.divider()
+            st.markdown("### 👟 신발 자산별 누적 거리")
+            st.bar_chart(df_work.groupby('ShoeID')['DistanceKm'].sum())
+        else:
+            st.markdown("### 📅 월별 누적 거리 (km)")
+            df_work['YearMonth'] = df_work['WorkoutDate'].dt.to_period('M').astype(str)
+            st.bar_chart(df_work.groupby('YearMonth')['DistanceKm'].sum())
+            st.divider()
+            st.markdown("### 🏃 훈련 유형별 비중")
+            st.bar_chart(df_work.groupby('WorkoutType')['DistanceKm'].sum())
+            st.divider()
+            st.markdown("### 👟 신발 자산별 누적 거리")
+            st.bar_chart(df_work.groupby('ShoeID')['DistanceKm'].sum())
+    else:
+        st.info("통계를 산출할 데이터가 없습니다.")
+
+# -----------------------------------------------------------------------------
+# 3. 📅 Dual-Plan 훈련 계획
+# -----------------------------------------------------------------------------
+elif menu == "📅 Dual-Plan 훈련 계획":
+    st.subheader("📅 Garmin vs Copilot AI Dual-Plan 제안")
+    df_plans = load_data("TrainingPlans")
+    st.dataframe(df_plans, use_container_width=True)
+    
+    st.divider()
+    with st.expander("+ 오늘의 훈련 계획 등록 & 제안 선택"):
+        with st.form("dual_plan_form"):
+            plan_date = st.date_input("계획 날짜", datetime.now())
+            garmin_plan = st.text_input("⌚ Garmin 제안 훈련", "Threshold Run (30분 @ 4:55/km)")
+            copilot_plan = st.text_input("🤖 Copilot AI 추천 훈련", "Easy Zone 2 Run (45분 @ 5:50/km) + 스트레칭")
+            selected_choice = st.radio("오늘 최종 채택할 훈련 계획 (Choice)", ["GarminPlan (가민 제안)", "CopilotPlan (AI 추천)"])
+            
+            if st.form_submit_button("오늘의 훈련 계획 결정 저장", use_container_width=True):
+                choice_code = "GarminPlan" if "Garmin" in selected_choice else "CopilotPlan"
+                save_data("TrainingPlans", pd.DataFrame([{
+                    "PlanID": f"PLAN-{datetime.now().strftime('%Y%m%d%H%M')}",
+                    "PlanDate": plan_date.strftime("%Y-%m-%d"),
+                    "GarminPlan": garmin_plan,
+                    "CopilotPlan": copilot_plan,
+                    "SelectedPlan": choice_code,
+                    "Status": "ADOPTED"
+                }]))
+                st.success("오늘의 선택된 훈련 계획이 확정되었습니다!")
+                st.rerun()
+
+# -----------------------------------------------------------------------------
+# 4. 🏃 훈련 이력 조회 & 수정
+# -----------------------------------------------------------------------------
+elif menu == "🏃 훈련 이력 조회 & 수정":
+    st.subheader("🏃 훈련 이력 조회 및 관리")
+    df_work = load_data("Workouts")
+    df_proj = load_data("Projects")
+    df_shoes = load_data("Shoes")
+    
+    p_list = ["전체 프로젝트 보기"] + (df_proj["ProjectName"].tolist() if not df_proj.empty else [])
+    selected_p = st.selectbox("🎯 프로젝트 필터 선택", p_list)
+    
+    filtered_w = df_work[df_work["ProjectID"] == selected_p] if (selected_p != "전체 프로젝트 보기" and not df_work.empty) else df_work
+
+    if not filtered_w.empty:
+        tot_dist = filtered_w["DistanceKm"].sum()
+        st.info(f"📊 **{selected_p}** 요약: 총 **{tot_dist:.1f} km** (총 {len(filtered_w)}회 수행)")
+        
+        with st.expander("✏️ 훈련 기록 수정 / 삭제하기"):
+            w_options = [f"{r['WorkoutID']} | {r['WorkoutDate']} | {r['WorkoutType']} ({r['DistanceKm']}km)" for idx, r in filtered_w.iloc[::-1].iterrows()]
+            target_w_str = st.selectbox("수정/삭제할 훈련 선택", w_options)
+            target_id = target_w_str.split(" | ")[0]
+            w_row = df_work[df_work["WorkoutID"] == target_id].iloc[0]
+            
+            def parse_date(d_val):
+                try: return datetime.strptime(str(d_val)[:10], "%Y-%m-%d")
+                except: return datetime.now()
+
+            with st.form("edit_workout_form"):
+                edit_w_date = st.date_input("운동 날짜", parse_date(w_row["WorkoutDate"]))
+                edit_w_proj = st.selectbox("관련 프로젝트", df_proj["ProjectName"].tolist() if not df_proj.empty else ["기본"], index=df_proj["ProjectName"].tolist().index(w_row["ProjectID"]) if w_row["ProjectID"] in df_proj["ProjectName"].tolist() else 0)
+                edit_w_type = st.selectbox("운동 유형", ["Easy", "Recovery", "LSD", "Threshold", "Interval", "Sprint", "Race"], index=["Easy", "Recovery", "LSD", "Threshold", "Interval", "Sprint", "Race"].index(w_row["WorkoutType"]) if w_row["WorkoutType"] in ["Easy", "Recovery", "LSD", "Threshold", "Interval", "Sprint", "Race"] else 0)
+                
+                c1, c2 = st.columns(2)
+                edit_dist = c1.number_input("거리 (km)", 0.0, step=0.1, value=float(w_row["DistanceKm"]))
+                edit_dur = c1.number_input("시간 (분)", 0.0, step=1.0, value=float(w_row["DurationMinutes"]))
+                edit_pace = c2.text_input("평균 페이스", str(w_row["AvgPace"]))
+                edit_hr = c2.number_input("평균 심박수", 0, value=int(w_row.get("AvgHeartRate", 145)))
+                
+                edit_shoe = st.selectbox("착용 신발", df_shoes["ShoeName"].tolist() if not df_shoes.empty else ["기본"], index=df_shoes["ShoeName"].tolist().index(w_row["ShoeID"]) if w_row["ShoeID"] in df_shoes["ShoeName"].tolist() else 0)
+                edit_rpe = st.slider("강도 (RPE 1~10)", 1, 10, int(w_row.get("RPE", 5)))
+                edit_notes = st.text_area("메모/노트", str(w_row.get("Notes", "")))
+                
+                col_btn1, col_btn2 = st.columns(2)
+                btn_save = col_btn1.form_submit_button("💾 수정사항 저장", use_container_width=True)
+                btn_del = col_btn2.form_submit_button("🗑️ 이 훈련 삭제", use_container_width=True)
+                
+                if btn_save:
+                    df_work.loc[df_work["WorkoutID"] == target_id, "WorkoutDate"] = edit_w_date.strftime("%Y-%m-%d")
+                    df_work.loc[df_work["WorkoutID"] == target_id, "ProjectID"] = edit_w_proj
+                    df_work.loc[df_work["WorkoutID"] == target_id, "WorkoutType"] = edit_w_type
+                    df_work.loc[df_work["WorkoutID"] == target_id, "DistanceKm"] = edit_dist
+                    df_work.loc[df_work["WorkoutID"] == target_id, "DurationMinutes"] = edit_dur
+                    df_work.loc[df_work["WorkoutID"] == target_id, "AvgPace"] = edit_pace
+                    df_work.loc[df_work["WorkoutID"] == target_id, "AvgHeartRate"] = edit_hr
+                    df_work.loc[df_work["WorkoutID"] == target_id, "ShoeID"] = edit_shoe
+                    df_work.loc[df_work["WorkoutID"] == target_id, "RPE"] = edit_rpe
+                    df_work.loc[df_work["WorkoutID"] == target_id, "Notes"] = edit_notes
+                    write_sheet("Workouts", df_work)
+                    st.success("수정 완료!")
+                    st.rerun()
+                    
+                if btn_del:
+                    df_work = df_work[df_work["WorkoutID"] != target_id]
+                    write_sheet("Workouts", df_work)
+                    st.warning("삭제 완료!")
+                    st.rerun()
+
+        st.divider()
+        st.subheader("📋 훈련 목록")
+        if view_mode == "💻 PC Desktop View":
+            st.dataframe(filtered_w.iloc[::-1], use_container_width=True)
+        else:
+            for idx, row in filtered_w.iloc[::-1].iterrows():
+                st.markdown(f"**📅 {str(row['WorkoutDate'])[:10]} | {row['WorkoutType']} ({row['ProjectID']})**")
+                st.markdown(f"📏 **{row['DistanceKm']}km** ({row['DurationMinutes']}분) | ⏱️ **{row['AvgPace']}** | 👟 {row['ShoeID']}")
+                if pd.notnull(row.get('Notes')) and row.get('Notes') != "":
+                    st.caption(f"💬 {row['Notes']}")
+                st.divider()
+    else:
+        st.caption("조건에 맞는 훈련 기록이 없습니다.")
+
+# -----------------------------------------------------------------------------
+# 5. 📝 데이터 상세 입력
+# -----------------------------------------------------------------------------
+elif menu == "📝 데이터 상세 입력":
+    tab1, tab2, tab3 = st.tabs(["일일 상태", "운동 기록 (수동)", "Garmin 지표"])
     
     with tab1:
         st.caption("Garmin 아침 컨디션 입력 (3분 소요)")
@@ -178,7 +380,6 @@ elif menu == "📝 데이터 입력 (상세)":
                 st.success("저장 완료!")
 
     with tab2:
-        st.caption("상세 훈련 기록 입력 (R-005, R-006 스펙 반영)")
         df_p = load_data("Projects")
         df_s = load_data("Shoes")
         p_list = df_p["ProjectName"].tolist() if not df_p.empty else ["기본 프로젝트"]
@@ -186,7 +387,7 @@ elif menu == "📝 데이터 입력 (상세)":
         
         with st.form("workout_form"):
             w_date = st.date_input("운동 날짜", datetime.now())
-            w_proj = st.selectbox("관련 프로젝트 (R-004)", p_list)
+            w_proj = st.selectbox("관련 프로젝트", p_list)
             w_type = st.selectbox("운동 유형", ["Easy", "Recovery", "LSD", "Threshold", "Interval", "Sprint", "Race"])
             
             c1, c2 = st.columns(2)
@@ -203,8 +404,7 @@ elif menu == "📝 데이터 입력 (상세)":
             c3, c4 = st.columns(2)
             leg_fatigue = c3.slider("다리 피로도 (1~10)", 1, 10, 3)
             cardio_fatigue = c4.slider("심폐 피로도 (1~10)", 1, 10, 3)
-            
-            w_note = st.text_area("Copilot 분석 노트 & 사용자 메모 (R-006)")
+            w_note = st.text_area("Copilot 분석 노트 & 메모")
             
             if st.form_submit_button("상세 운동 기록 저장", use_container_width=True):
                 save_data("Workouts", pd.DataFrame([{
@@ -214,10 +414,10 @@ elif menu == "📝 데이터 입력 (상세)":
                     "AvgPower": power, "Temperature": temp, "ShoeID": shoe, "RPE": rpe,
                     "LegFatigue": leg_fatigue, "CardioFatigue": cardio_fatigue, "Notes": w_note
                 }]))
-                st.success("훈련 데이터 저장 및 신발 누적 연동 완료!")
+                st.success("저장 완료!")
+                st.rerun()
                 
     with tab3:
-        st.caption("Garmin 지표 업데이트 (R-005)")
         with st.form("metric_form"):
             m_date = st.date_input("측정 날짜", datetime.now())
             wt = st.number_input("현재 체중 (kg)", 0.0, step=0.1, value=85.0)
@@ -231,44 +431,138 @@ elif menu == "📝 데이터 입력 (상세)":
                     "MetricID": f"MET-{datetime.now().strftime('%Y%m%d%H%M')}",
                     "MetricDate": m_date, "WeightKg": wt, "VO2Max": vo2, "LTPace": lt_p, "LTHR": lt_h, "LTPower": lt_pow
                 }]))
-                st.success("지표 업데이트 완료!")
+                st.success("저장 완료!")
+                st.rerun()
 
 # -----------------------------------------------------------------------------
-# 3. 🎯 프로젝트 관리 및 수정 (요구사항 반영)
+# 6. 🏆 주요 기록 (PR) & 지표
 # -----------------------------------------------------------------------------
-elif menu == "🎯 프로젝트 관리 및 수정":
-    st.subheader("🎯 프로젝트 관리 & 편집")
-    df_proj = load_data("Projects")
+elif menu == "🏆 주요 기록 (PR) & 지표":
+    st.subheader("🏆 Personal Records (주요 최고 기록)")
+    df_pr = load_data("PersonalRecords")
     
+    if view_mode == "💻 PC Desktop View":
+        cols = st.columns(len(df_pr))
+        for idx, row in df_pr.iterrows():
+            cols[idx % len(cols)].metric(f"🥇 {row['Category']}", row['TimeOrDist'], f"달성: {row['AchievedDate']}")
+    else:
+        for idx in range(0, len(df_pr), 2):
+            col_a, col_b = st.columns(2)
+            row1 = df_pr.iloc[idx]
+            col_a.metric(f"🥇 {row1['Category']}", row1['TimeOrDist'], f"달성: {row1['AchievedDate']}")
+            if idx + 1 < len(df_pr):
+                row2 = df_pr.iloc[idx + 1]
+                col_b.metric(f"🥇 {row2['Category']}", row2['TimeOrDist'], f"달성: {row2['AchievedDate']}")
+            
+    st.divider()
+    st.dataframe(df_pr, use_container_width=True)
+    
+    with st.expander("✏️ 주요 기록 (PR) 업데이트"):
+        with st.form("pr_update_form"):
+            cat_select = st.selectbox("기록 항목 선택", df_pr["Category"].tolist())
+            new_val = st.text_input("새 기록 (예: 49:30 또는 30 km)", "")
+            new_date = st.date_input("달성 일자", datetime.now())
+            new_notes = st.text_input("비고/대회명", "")
+            
+            if st.form_submit_button("주요 기록 저장", use_container_width=True):
+                df_pr.loc[df_pr["Category"] == cat_select, "TimeOrDist"] = new_val
+                df_pr.loc[df_pr["Category"] == cat_select, "AchievedDate"] = new_date.strftime("%Y-%m-%d")
+                df_pr.loc[df_pr["Category"] == cat_select, "Notes"] = new_notes
+                write_sheet("PersonalRecords", df_pr)
+                st.success("저장 완료!")
+                st.rerun()
+
+# -----------------------------------------------------------------------------
+# 7. 📥 Garmin CSV/엑셀 가져오기
+# -----------------------------------------------------------------------------
+elif menu == "📥 Garmin CSV/엑셀 가져오기":
+    st.subheader("📥 Garmin 내보내기 파일 자동 등록")
+    df_p = load_data("Projects")
+    df_s = load_data("Shoes")
+    p_list = df_p["ProjectName"].tolist() if not df_p.empty else ["기본 프로젝트"]
+    s_list = df_s["ShoeName"].tolist() if not df_s.empty else ["기본 러닝화"]
+    
+    uploaded_file = st.file_uploader("Garmin 파일 업로드", type=["csv", "xlsx"])
+    
+    if uploaded_file is not None:
+        try:
+            df_uploaded = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+            st.success("파일 읽기 성공!")
+            st.dataframe(df_uploaded.head(), use_container_width=True)
+            
+            with st.form("import_confirm_form"):
+                def_proj = st.selectbox("관련 프로젝트", p_list)
+                def_shoe = st.selectbox("기본 신발", s_list)
+                
+                if st.form_submit_button("데이터베이스에 자동 등록하기", use_container_width=True):
+                    new_rows = []
+                    for idx, r in df_uploaded.iterrows():
+                        w_date = str(r.get("Date", r.get("날짜", datetime.now().strftime("%Y-%m-%d"))))[:10]
+                        dist = float(r.get("Distance", r.get("거리", 0.0)))
+                        dur = float(r.get("Time", r.get("시간", 0.0)))
+                        pace = str(r.get("Avg Pace", r.get("평균 페이스", "-")))
+                        hr = int(r.get("Avg HR", r.get("평균 심박수", 0))) if pd.notnull(r.get("Avg HR", r.get("평균 심박수", 0))) else 0
+                        
+                        new_rows.append({
+                            "WorkoutID": f"WO-IMP-{datetime.now().strftime('%M%S')}-{idx}",
+                            "ProjectID": def_proj, "WorkoutDate": w_date, "WorkoutType": "Garmin Import",
+                            "DistanceKm": dist, "DurationMinutes": dur, "AvgPace": pace, "AvgHeartRate": hr,
+                            "AvgPower": 0, "Temperature": 20, "ShoeID": def_shoe, "RPE": 5,
+                            "LegFatigue": 3, "CardioFatigue": 3, "Notes": f"Garmin 파일({uploaded_file.name})에서 가져옴"
+                        })
+                    
+                    save_data("Workouts", pd.DataFrame(new_rows))
+                    st.success(f"🎉 총 {len(new_rows)}건 추가 완료!")
+                    st.rerun()
+        except Exception as e:
+            st.error(f"오류 발생: {e}")
+
+# -----------------------------------------------------------------------------
+# 8. 🎯 프로젝트 관리
+# -----------------------------------------------------------------------------
+elif menu == "🎯 프로젝트 관리":
+    st.subheader("🎯 프로젝트 목록 & 수정")
+    df_proj = load_data("Projects")
     st.dataframe(df_proj, use_container_width=True)
     
-    # 프로젝트 수정/삭제 폼
     if not df_proj.empty:
-        with st.expander("✏️ 기존 프로젝트 수정 / 삭제"):
-            selected_proj_id = st.selectbox("수정할 프로젝트 ID 선택", df_proj["ProjectID"].tolist())
+        with st.expander("✏️ 기존 프로젝트 일정 / 정보 수정"):
+            selected_proj_id = st.selectbox("수정할 프로젝트 선택", df_proj["ProjectID"].tolist())
             proj_row = df_proj[df_proj["ProjectID"] == selected_proj_id].iloc[0]
             
+            def parse_date(d_val):
+                try: return datetime.strptime(str(d_val)[:10], "%Y-%m-%d")
+                except: return datetime.now()
+
+            start_d_default = parse_date(proj_row.get("StartDate", datetime.now().strftime("%Y-%m-%d")))
+            target_d_default = parse_date(proj_row.get("TargetDate", datetime.now().strftime("%Y-%m-%d")))
+
             with st.form("edit_proj_form"):
                 edit_name = st.text_input("프로젝트 이름", proj_row["ProjectName"])
-                edit_status = st.selectbox("상태", ["ACTIVE", "PLANNED", "COMPLETED", "CANCELLED"], index=["ACTIVE", "PLANNED", "COMPLETED", "CANCELLED"].index(proj_row["Status"]) if proj_row["Status"] in ["ACTIVE", "PLANNED", "COMPLETED", "CANCELLED"] else 0)
+                edit_status = st.selectbox("상태", ["ACTIVE", "PLANNED", "COMPLETED", "CANCELLED"], 
+                                           index=["ACTIVE", "PLANNED", "COMPLETED", "CANCELLED"].index(proj_row["Status"]) if proj_row["Status"] in ["ACTIVE", "PLANNED", "COMPLETED", "CANCELLED"] else 0)
                 edit_goal = st.text_input("목표 값", proj_row["GoalValue"])
+                
+                c_s, c_t = st.columns(2)
+                edit_start_date = c_s.date_input("시작일 수정", start_d_default)
+                edit_target_date = c_t.date_input("목표 완료일 수정", target_d_default)
                 edit_desc = st.text_area("설명", proj_row.get("Description", ""))
                 
-                col_u, col_d = st.columns(2)
-                btn_update = col_u.form_submit_button("수정 내용 저장", use_container_width=True)
-                
-                if btn_update:
+                if st.form_submit_button("프로젝트 수정 내용 저장", use_container_width=True):
                     df_proj.loc[df_proj["ProjectID"] == selected_proj_id, "ProjectName"] = edit_name
                     df_proj.loc[df_proj["ProjectID"] == selected_proj_id, "Status"] = edit_status
                     df_proj.loc[df_proj["ProjectID"] == selected_proj_id, "GoalValue"] = edit_goal
+                    df_proj.loc[df_proj["ProjectID"] == selected_proj_id, "StartDate"] = edit_start_date.strftime("%Y-%m-%d")
+                    df_proj.loc[df_proj["ProjectID"] == selected_proj_id, "TargetDate"] = edit_target_date.strftime("%Y-%m-%d")
                     df_proj.loc[df_proj["ProjectID"] == selected_proj_id, "Description"] = edit_desc
+                    
                     write_sheet("Projects", df_proj)
-                    st.success("프로젝트가 성공적으로 수정되었습니다!")
+                    st.success("수정 완료!")
                     st.rerun()
 
     with st.expander("+ 새 프로젝트 등록"):
         with st.form("proj_add"):
-            pn = st.text_input("프로젝트 명 (예: Road to Half 1:50)")
+            pn = st.text_input("프로젝트 명")
             stt = st.selectbox("상태", ["PLANNED", "ACTIVE", "COMPLETED"])
             gt = st.selectbox("목표 유형", ["Time Trial", "Distance", "Habit"])
             gv = st.text_input("목표 값", "Half Marathon Sub-1:50")
@@ -277,73 +571,43 @@ elif menu == "🎯 프로젝트 관리 및 수정":
             if st.form_submit_button("프로젝트 생성", use_container_width=True):
                 save_data("Projects", pd.DataFrame([{
                     "ProjectID": f"PRJ-{datetime.now().strftime('%M%S')}", "ProjectName": pn,
-                    "Status": stt, "GoalType": gt, "GoalValue": gv, "StartDate": s_d, "TargetDate": t_d
+                    "Status": stt, "GoalType": gt, "GoalValue": gv, 
+                    "StartDate": s_d.strftime("%Y-%m-%d"), "TargetDate": t_d.strftime("%Y-%m-%d")
                 }]))
                 st.success("생성 완료!")
                 st.rerun()
 
 # -----------------------------------------------------------------------------
-# 4. 👟 신발 관리 & 훈련 이력 연동 (요구사항 반영)
+# 9. 👟 신발 관리 & 이력
 # -----------------------------------------------------------------------------
-elif menu == "👟 신발 관리 & 훈련 이력":
-    st.subheader("👟 신발 자산 & 훈련 이력 조회")
+elif menu == "👟 신발 관리 & 이력":
+    st.subheader("👟 신발 자산 & 훈련 이력")
     df_shoes = load_data("Shoes")
     df_work = load_data("Workouts")
-    
     st.dataframe(df_shoes, use_container_width=True)
     
     st.divider()
     st.subheader("🔍 신발별 수행 훈련 보기")
     if not df_shoes.empty:
-        selected_shoe = st.selectbox("조회할 신발을 선택하세요", df_shoes["ShoeName"].tolist())
-        
-        # 선택한 신발로 뛴 훈련들 자동 필터링
+        selected_shoe = st.selectbox("조회할 신발 선택", df_shoes["ShoeName"].tolist())
         filtered_workouts = df_work[df_work["ShoeID"] == selected_shoe] if not df_work.empty else pd.DataFrame()
-        
-        # 실시간 누적 거리 계산
         calc_dist = filtered_workouts["DistanceKm"].sum() if not filtered_workouts.empty else 0.0
-        st.info(f"👟 **{selected_shoe}**로 기록된 총 훈련 거리: **{calc_dist:.1f} km** (총 {len(filtered_workouts)}회 수행)")
+        st.info(f"👟 **{selected_shoe}** 총 훈련 거리: **{calc_dist:.1f} km** ({len(filtered_workouts)}회 수행)")
         
         if not filtered_workouts.empty:
-            for idx, r in filtered_workouts.iloc[::-1].iterrows():
-                st.write(f"🏃 **{r['WorkoutDate']}** | {r['WorkoutType']} | **{r['DistanceKm']}km** (페이스: {r['AvgPace']}, 심박: {r['AvgHeartRate']}bpm)")
-                if pd.notnull(r['Notes']) and r['Notes'] != "":
-                    st.caption(f"💬 {r['Notes']}")
-                st.divider()
+            if view_mode == "💻 PC Desktop View":
+                st.dataframe(filtered_workouts, use_container_width=True)
+            else:
+                for idx, r in filtered_workouts.iloc[::-1].iterrows():
+                    st.write(f"🏃 **{str(r['WorkoutDate'])[:10]}** | {r['WorkoutType']} | **{r['DistanceKm']}km** (페이스: {r['AvgPace']})")
+                    if pd.notnull(r.get('Notes')) and r.get('Notes') != "":
+                        st.caption(f"💬 {r['Notes']}")
+                    st.divider()
         else:
-            st.caption("해당 신발로 기록된 훈련이 아직 없습니다.")
-            
-    with st.expander("+ 새 러닝화 자산 등록"):
-        with st.form("shoe_add"):
-            sn = st.text_input("신발 이름 (예: Nike Vaporfly 3)")
-            sb = st.text_input("브랜드", "Nike")
-            sc = st.selectbox("카테고리", ["Daily", "Long Run", "Tempo", "Race"])
-            if st.form_submit_button("신발 추가", use_container_width=True):
-                save_data("Shoes", pd.DataFrame([{
-                    "ShoeID": f"SHOE-{datetime.now().strftime('%M%S')}", "ShoeName": sn,
-                    "Brand": sb, "DistanceKm": 0.0, "Status": "ACTIVE", "Category": sc
-                }]))
-                st.success("신발이 자산으로 등록되었습니다!")
-                st.rerun()
+            st.caption("해당 신발로 기록된 훈련이 없습니다.")
 
 # -----------------------------------------------------------------------------
-# 5. 📊 주요 성능 지표 (Garmin 트래킹)
-# -----------------------------------------------------------------------------
-elif menu == "📊 주요 성능 지표 (Garmin)":
-    st.subheader("👤 러너 기본 정보")
-    df_ath = load_data("Athlete")
-    if not df_ath.empty:
-        ath = df_ath.iloc[0]
-        st.write(f"🎂 생년월일: **{ath.get('BirthDate', '-')}** (1997년생) | 📏 키: **{ath.get('HeightCm', '-')}cm**")
-        st.write(f"⚖️ 시작 체중: **{ath.get('StartWeightKg', '-')}kg** $\rightarrow$ 현재 체중: **{ath.get('CurrentWeightKg', '-')}kg**")
-        
-    st.divider()
-    st.subheader("📈 Garmin 주요 지표 트래킹 (VO₂max & 역치)")
-    df_met = load_data("Metrics")
-    st.dataframe(df_met, use_container_width=True)
-
-# -----------------------------------------------------------------------------
-# 6. 🤖 코치 노트 (R-006)
+# 10. 🤖 코치 노트
 # -----------------------------------------------------------------------------
 elif menu == "🤖 코치 노트":
     st.subheader("🤖 Copilot 코치 노트")
