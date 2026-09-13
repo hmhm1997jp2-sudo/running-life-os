@@ -5,6 +5,51 @@ import os
 
 st.set_page_config(page_title="Running Life OS", page_icon="🏃", layout="wide", initial_sidebar_state="collapsed")
 
+# 🎨 Custom CSS 스타일링 (모던 다크 & 라운드 카드 UI)
+st.markdown("""
+    <style>
+    .main {
+        background-color: #0f172a;
+        color: #f8fafc;
+    }
+    .css-card {
+        background: #1e293b;
+        border-radius: 16px;
+        padding: 20px;
+        margin-bottom: 16px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+        border: 1px solid #334155;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 1.8rem !important;
+        font-weight: 700 !important;
+        color: #38bdf8 !important;
+    }
+    div[data-testid="stMetricLabel"] {
+        font-size: 0.9rem !important;
+        color: #94a3b8 !important;
+    }
+    .stSelectbox > div > div {
+        background-color: #1e293b !important;
+        border-radius: 10px !important;
+        border: 1px solid #475569 !important;
+    }
+    .stButton>button {
+        border-radius: 12px !important;
+        background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+        color: white !important;
+        font-weight: 600 !important;
+        border: none !important;
+        padding: 0.6rem 1.2rem !important;
+        transition: all 0.2s ease-in-out;
+    }
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(2, 132, 199, 0.4);
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 # 🔒 보안 처리
 def check_password():
     if "authenticated" not in st.session_state:
@@ -12,19 +57,21 @@ def check_password():
     if st.session_state["authenticated"]:
         return True
 
-    st.title("🔒 Running Life OS Access Control")
-    st.caption("개인 보호용 Running Life OS 시스템입니다. 비밀번호를 입력하세요.")
-    user_password = st.text_input("🔑 Password", type="password")
+    st.markdown("<h2 style='text-align: center;'>🔒 Running Life OS</h2>", unsafe_allow_html=True)
+    st.caption("<p style='text-align: center;'>개인 보호용 Running Life OS 시스템입니다. 비밀번호를 입력하세요.</p>", unsafe_allow_html=True)
     
-    if st.button("Access OS", use_container_width=True):
-        if "PASSWORD" in st.secrets and user_password == st.secrets["PASSWORD"]:
-            st.session_state["authenticated"] = True
-            st.rerun()
-        elif "PASSWORD" not in st.secrets and user_password == "1234":
-            st.session_state["authenticated"] = True
-            st.rerun()
-        else:
-            st.error("❌ 비밀번호가 올바르지 않습니다.")
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        user_password = st.text_input("🔑 Password", type="password")
+        if st.button("Access OS", use_container_width=True):
+            if "PASSWORD" in st.secrets and user_password == st.secrets["PASSWORD"]:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            elif "PASSWORD" not in st.secrets and user_password == "1234":
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("❌ 비밀번호가 올바르지 않습니다.")
     return False
 
 if not check_password():
@@ -37,7 +84,6 @@ DB_FILE = os.path.join(BASE_DIR, "Running Life OS Database.xlsx")
 def init_db():
     required_sheets = ["Athlete", "Projects", "Workouts", "DailyStatus", "Metrics", "Shoes", "Races", "CoachNotes", "PersonalRecords", "TrainingPlans"]
     
-    # 기본 뼈대 데이터 프레임 사전
     default_sheets = {
         "Athlete": pd.DataFrame([{"AthleteID": "ATH-001", "BirthDate": "1997-10-28", "HeightCm": 180, "CurrentWeightKg": 85.0, "StartWeightKg": 115.0}]),
         "Projects": pd.DataFrame([{"ProjectID": "PRJ-001", "ProjectName": "Road to 10K 50", "Status": "ACTIVE", "GoalType": "Time Trial", "GoalValue": "10km Sub-50", "StartDate": "2026-09-01", "TargetDate": "2026-11-30", "Description": "10k 50분 진입 프로젝트"}]),
@@ -69,18 +115,14 @@ def init_db():
             for s_name, s_df in default_sheets.items():
                 s_df.to_excel(writer, sheet_name=s_name, index=False)
     else:
-        # 파일이 존재하더라도 누락된 시트 자동 보충
         excel_obj = pd.ExcelFile(DB_FILE)
         existing_sheets = excel_obj.sheet_names
         missing_sheets = [s for s in required_sheets if s not in existing_sheets]
         
         if missing_sheets:
-            all_data = {}
-            for s in existing_sheets:
-                all_data[s] = pd.read_excel(DB_FILE, sheet_name=s)
+            all_data = {s: pd.read_excel(DB_FILE, sheet_name=s) for s in existing_sheets}
             for ms in missing_sheets:
                 all_data[ms] = default_sheets[ms]
-                
             with pd.ExcelWriter(DB_FILE, engine='openpyxl') as writer:
                 for s_name, s_df in all_data.items():
                     s_df.to_excel(writer, sheet_name=s_name, index=False)
@@ -93,13 +135,7 @@ def load_data(sheet):
 
 def write_sheet(sheet, df):
     excel_obj = pd.ExcelFile(DB_FILE)
-    all_sheets = {}
-    for s_name in excel_obj.sheet_names:
-        if s_name == sheet:
-            all_sheets[s_name] = df
-        else:
-            all_sheets[s_name] = pd.read_excel(DB_FILE, sheet_name=s_name)
-            
+    all_sheets = {s_name: (df if s_name == sheet else pd.read_excel(DB_FILE, sheet_name=s_name)) for s_name in excel_obj.sheet_names}
     with pd.ExcelWriter(DB_FILE, engine='openpyxl') as writer:
         for s_name, s_df in all_sheets.items():
             s_df.to_excel(writer, sheet_name=s_name, index=False)
@@ -109,10 +145,10 @@ def save_data(sheet, new_df):
     updated = pd.concat([old_df, new_df], ignore_index=True)
     write_sheet(sheet, updated)
 
-# 상단 헤더 & 접속 모드 제어
+# Header UI
 col_title, col_view, col_logout = st.columns([3, 2, 1])
 with col_title:
-    st.title("🏃 Running Life OS")
+    st.markdown("<h1 style='color: #38bdf8; margin:0;'>🏃 Running Life OS</h1>", unsafe_allow_html=True)
 with col_view:
     view_mode = st.radio("📱💻 View Mode", ["📱 Mobile View", "💻 PC Desktop View"], horizontal=True)
 with col_logout:
@@ -153,63 +189,75 @@ if menu == "🏠 Dashboard (홈)":
     active_proj = df_proj[df_proj["Status"] == "ACTIVE"] if not df_proj.empty else pd.DataFrame()
 
     if view_mode == "📱 Mobile View":
+        st.markdown("<div class='css-card'>", unsafe_allow_html=True)
         st.subheader("📱 Today's Mobile Snapshot")
         m1, m2 = st.columns(2)
         m1.metric("Body Battery", latest_daily.get("BodyBattery", "-"))
         m2.metric("Readiness", latest_daily.get("TrainingReadiness", "-"))
         st.caption(f"💙 HRV Status: **{latest_daily.get('HRVStatus', '-')}**")
-        st.divider()
+        st.markdown("</div>", unsafe_allow_html=True)
 
+        st.markdown("<div class='css-card'>", unsafe_allow_html=True)
         st.subheader("⚡ Performance Metrics")
         st.markdown(f"🏃 **VO₂max**: `{m_latest.get('VO2Max', '-')}` | **LT Pace**: `{m_latest.get('LTPace', '-')}`")
         st.markdown(f"💙 **LT HR**: `{m_latest.get('LTHR', '-')} bpm` | ⚡ **LT Power**: `{m_latest.get('LTPower', '-')}W`")
-        st.divider()
+        st.markdown("</div>", unsafe_allow_html=True)
 
+        st.markdown("<div class='css-card'>", unsafe_allow_html=True)
         st.subheader("🎯 Active Project")
         if not active_proj.empty:
             p = active_proj.iloc[0]
             st.success(f"**{p['ProjectName']}**\n\n🎯 목표: {p['GoalValue']}\n🗓️ 기한: ~{p.get('TargetDate', '-')}")
         else:
             st.info("등록된 활성 프로젝트가 없습니다.")
-        st.divider()
+        st.markdown("</div>", unsafe_allow_html=True)
 
+        st.markdown("<div class='css-card'>", unsafe_allow_html=True)
         st.subheader("🏃 Recent Workouts")
         if not df_work.empty:
             for idx, row in df_work.tail(3).iloc[::-1].iterrows():
                 st.info(f"**{row['WorkoutDate']} | {row['WorkoutType']}** ({row['DistanceKm']}km / {row['AvgPace']})\n\n💬 {row.get('Notes', '')}")
         else:
             st.caption("기록된 훈련이 없습니다.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     else:
         st.subheader("💻 PC Master Operations Dashboard")
         pc_col1, pc_col2, pc_col3 = st.columns(3)
         
         with pc_col1:
+            st.markdown("<div class='css-card'>", unsafe_allow_html=True)
             st.markdown("#### 🔋 Daily Condition")
             st.metric("Body Battery", latest_daily.get("BodyBattery", "-"))
             st.metric("Training Readiness", latest_daily.get("TrainingReadiness", "-"))
             st.caption(f"HRV: {latest_daily.get('HRVStatus', '-')}")
+            st.markdown("</div>", unsafe_allow_html=True)
             
         with pc_col2:
+            st.markdown("<div class='css-card'>", unsafe_allow_html=True)
             st.markdown("#### ⚡ Performance Thresholds")
             st.metric("VO₂max", f"{m_latest.get('VO2Max', '-')}")
             st.metric("LT Pace / HR", f"{m_latest.get('LTPace', '-')} / {m_latest.get('LTHR', '-')}bpm")
             st.caption(f"Power: {m_latest.get('LTPower', '-')}W | Weight: {m_latest.get('WeightKg', '-')}kg")
+            st.markdown("</div>", unsafe_allow_html=True)
             
         with pc_col3:
+            st.markdown("<div class='css-card'>", unsafe_allow_html=True)
             st.markdown("#### 🎯 Active Project")
             if not active_proj.empty:
                 p = active_proj.iloc[0]
                 st.success(f"**{p['ProjectName']}**\n\n- Goal: {p['GoalValue']}\n- Target Date: {p.get('TargetDate', '-')}")
             else:
                 st.info("No active project.")
+            st.markdown("</div>", unsafe_allow_html=True)
                 
-        st.divider()
+        st.markdown("<div class='css-card'>", unsafe_allow_html=True)
         st.markdown("#### 📋 Recent Workouts & Analysis Table")
         if not df_work.empty:
             st.dataframe(df_work.tail(10).iloc[::-1], use_container_width=True)
         else:
             st.caption("기록된 운동이 없습니다.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # 2. 📊 러닝 통계 분석
@@ -221,29 +269,23 @@ elif menu == "📊 러닝 통계 분석":
     if not df_work.empty:
         df_work['WorkoutDate'] = pd.to_datetime(df_work['WorkoutDate'])
         
-        if view_mode == "💻 PC Desktop View":
-            c_chart1, c_chart2 = st.columns(2)
-            with c_chart1:
-                st.markdown("### 📅 월별 누적 거리 (km)")
-                df_work['YearMonth'] = df_work['WorkoutDate'].dt.to_period('M').astype(str)
-                st.bar_chart(df_work.groupby('YearMonth')['DistanceKm'].sum())
-            with c_chart2:
-                st.markdown("### 🏃 훈련 유형별 비중")
-                st.bar_chart(df_work.groupby('WorkoutType')['DistanceKm'].sum())
-                
-            st.divider()
-            st.markdown("### 👟 신발 자산별 누적 거리")
-            st.bar_chart(df_work.groupby('ShoeID')['DistanceKm'].sum())
-        else:
+        c_chart1, c_chart2 = st.columns(2)
+        with c_chart1:
+            st.markdown("<div class='css-card'>", unsafe_allow_html=True)
             st.markdown("### 📅 월별 누적 거리 (km)")
             df_work['YearMonth'] = df_work['WorkoutDate'].dt.to_period('M').astype(str)
             st.bar_chart(df_work.groupby('YearMonth')['DistanceKm'].sum())
-            st.divider()
+            st.markdown("</div>", unsafe_allow_html=True)
+        with c_chart2:
+            st.markdown("<div class='css-card'>", unsafe_allow_html=True)
             st.markdown("### 🏃 훈련 유형별 비중")
             st.bar_chart(df_work.groupby('WorkoutType')['DistanceKm'].sum())
-            st.divider()
-            st.markdown("### 👟 신발 자산별 누적 거리")
-            st.bar_chart(df_work.groupby('ShoeID')['DistanceKm'].sum())
+            st.markdown("</div>", unsafe_allow_html=True)
+            
+        st.markdown("<div class='css-card'>", unsafe_allow_html=True)
+        st.markdown("### 👟 신발 자산별 누적 거리")
+        st.bar_chart(df_work.groupby('ShoeID')['DistanceKm'].sum())
+        st.markdown("</div>", unsafe_allow_html=True)
     else:
         st.info("통계를 산출할 데이터가 없습니다.")
 
