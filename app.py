@@ -3,9 +3,46 @@ import pandas as pd
 from datetime import datetime
 import os
 
-# 모바일 기본 레이아웃 설정 (사이드바를 접어서 시작)
+# 모바일 기본 레이아웃 설정
 st.set_page_config(page_title="Running Life OS", page_icon="🏃", layout="centered", initial_sidebar_state="collapsed")
 
+# -----------------------------------------------------------------------------
+# 🔒 보안 처리: Streamlit Cloud Secrets 기반 비밀번호 인증
+# -----------------------------------------------------------------------------
+def check_password():
+    """비밀번호 인증 성공 시 True, 실패 시 암호 입력 폼 표시 및 False 반환"""
+    if "authenticated" not in st.session_state:
+        st.session_state["authenticated"] = False
+
+    if st.session_state["authenticated"]:
+        return True
+
+    st.title("🔒 Running Life OS Access Control")
+    st.caption("본 시스템은 개인 보호용 시스템입니다. 비밀번호를 입력하세요.")
+    
+    user_password = st.text_input("🔑 Password", type="password")
+    
+    if st.button("Access OS", use_container_width=True):
+        # Streamlit Cloud의 Secrets에 등록된 PASSWORD 확인
+        if "PASSWORD" in st.secrets and user_password == st.secrets["PASSWORD"]:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        elif "PASSWORD" not in st.secrets and user_password == "1234":
+            # Secrets 설정 전 로컬 테스트용 기본 비밀번호
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("❌ 비밀번호가 올바르지 않습니다.")
+            
+    return False
+
+# 비밀번호 인증을 통과하지 못하면 하단 앱 실행을 중단함
+if not check_password():
+    st.stop()
+
+# -----------------------------------------------------------------------------
+# 🏃 메인 시스템 구동 (인증 성공 시 이하 코드 실행)
+# -----------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "Running Life OS Database.xlsx")
 
@@ -37,10 +74,15 @@ def save_data(sheet, new_df):
     with pd.ExcelWriter(DB_FILE, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
         updated.to_excel(writer, sheet_name=sheet, index=False)
 
-# 모바일 상단 네비게이션 메인 헤더
-st.title("🏃 Running Life OS")
+# 헤더 및 로그아웃 버튼
+col_title, col_logout = st.columns([3, 1])
+with col_title:
+    st.title("🏃 Running Life OS")
+with col_logout:
+    if st.button("🔒 Lock"):
+        st.session_state["authenticated"] = False
+        st.rerun()
 
-# 모바일 내비게이션 (상단 세렉트박스로 변경하여 터치 최적화)
 menu = st.selectbox(
     "📌 메뉴 이동", 
     ["📱 홈 (대시보드)", "📝 빠른 데이터 입력", "🎯 프로젝트 & 대회", "📊 성능 지표 (Garmin)", "👟 신발 관리", "🤖 코치 노트"],
@@ -49,15 +91,12 @@ menu = st.selectbox(
 
 st.divider()
 
-# -----------------------------------------------------------------------------
-# 1. 📱 홈 대시보드 (R-008 모바일 최적화)
-# -----------------------------------------------------------------------------
+# 1. 📱 홈 대시보드
 if menu == "📱 홈 (대시보드)":
     st.subheader("🔋 Garmin 상태 (오늘)")
     df_daily = load_data("DailyStatus")
     latest_daily = df_daily.iloc[-1] if not df_daily.empty else {}
     
-    # 모바일 세로 배치형 가독성 지표
     c1, c2 = st.columns(2)
     c1.metric("Body Battery", latest_daily.get("BodyBattery", "-"))
     c2.metric("Readiness", latest_daily.get("TrainingReadiness", "-"))
@@ -65,7 +104,6 @@ if menu == "📱 홈 (대시보드)":
     
     st.divider()
     
-    # Active Project
     st.subheader("🎯 진행 중 프로젝트")
     df_proj = load_data("Projects")
     active_proj = df_proj[df_proj["Status"] == "ACTIVE"] if not df_proj.empty else pd.DataFrame()
@@ -77,7 +115,6 @@ if menu == "📱 홈 (대시보드)":
         
     st.divider()
     
-    # Recent Workouts (모바일 카드 스타일로 출력)
     st.subheader("🏃 최근 훈련 (Top 3)")
     df_work = load_data("Workouts")
     if not df_work.empty:
@@ -91,9 +128,7 @@ if menu == "📱 홈 (대시보드)":
     else:
         st.caption("아직 기록된 운동이 없습니다. '빠른 데이터 입력'에서 작성하세요.")
 
-# -----------------------------------------------------------------------------
-# 2. 📝 빠른 데이터 입력 (R-003: 3분/5분)
-# -----------------------------------------------------------------------------
+# 2. 📝 빠른 데이터 입력
 elif menu == "📝 빠른 데이터 입력":
     tab1, tab2, tab3 = st.tabs(["일일 상태", "운동 기록", "Garmin 지표"])
     
@@ -141,7 +176,7 @@ elif menu == "📝 빠른 데이터 입력":
                 st.success("저장 완료!")
                 
     with tab3:
-        st.caption("Garmin 지표 업데이트 (R-005)")
+        st.caption("Garmin 지표 업데이트")
         with st.form("metric_form"):
             m_date = st.date_input("측정 날짜", datetime.now())
             wt = st.number_input("현재 체중 (kg)", 0.0, step=0.1, value=85.0)
@@ -157,9 +192,7 @@ elif menu == "📝 빠른 데이터 입력":
                 }]))
                 st.success("업데이트 완료!")
 
-# -----------------------------------------------------------------------------
 # 3. 🎯 프로젝트 & 대회
-# -----------------------------------------------------------------------------
 elif menu == "🎯 프로젝트 & 대회":
     st.subheader("🎯 프로젝트 목록")
     st.dataframe(load_data("Projects"), use_container_width=True)
@@ -179,9 +212,7 @@ elif menu == "🎯 프로젝트 & 대회":
                 }]))
                 st.success("생성 완료!")
 
-# -----------------------------------------------------------------------------
 # 4. 📊 성능 지표 (Garmin)
-# -----------------------------------------------------------------------------
 elif menu == "📊 성능 지표 (Garmin)":
     st.subheader("👤 러너 프로필 (1997년생)")
     df_ath = load_data("Athlete")
@@ -194,9 +225,7 @@ elif menu == "📊 성능 지표 (Garmin)":
     st.subheader("📈 Garmin 지표 히스토리")
     st.dataframe(load_data("Metrics"), use_container_width=True)
 
-# -----------------------------------------------------------------------------
 # 5. 👟 신발 관리
-# -----------------------------------------------------------------------------
 elif menu == "👟 신발 관리":
     st.subheader("👟 러닝화 자산 목록")
     st.dataframe(load_data("Shoes"), use_container_width=True)
@@ -212,9 +241,7 @@ elif menu == "👟 신발 관리":
                 }]))
                 st.success("추가 완료!")
 
-# -----------------------------------------------------------------------------
-# 6. 🤖 코치 노트 (R-006)
-# -----------------------------------------------------------------------------
+# 6. 🤖 코치 노트
 elif menu == "🤖 코치 노트":
     st.subheader("🤖 Copilot 코치 노트")
     df_notes = load_data("CoachNotes")
