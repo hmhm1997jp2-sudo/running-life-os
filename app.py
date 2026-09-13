@@ -10,7 +10,6 @@ st.set_page_config(page_title="Running Life OS", page_icon="🏃", layout="cente
 # 🔒 보안 처리: Streamlit Cloud Secrets 기반 비밀번호 인증
 # -----------------------------------------------------------------------------
 def check_password():
-    """비밀번호 인증 성공 시 True, 실패 시 암호 입력 폼 표시 및 False 반환"""
     if "authenticated" not in st.session_state:
         st.session_state["authenticated"] = False
 
@@ -23,12 +22,10 @@ def check_password():
     user_password = st.text_input("🔑 Password", type="password")
     
     if st.button("Access OS", use_container_width=True):
-        # Streamlit Cloud의 Secrets에 등록된 PASSWORD 확인
         if "PASSWORD" in st.secrets and user_password == st.secrets["PASSWORD"]:
             st.session_state["authenticated"] = True
             st.rerun()
         elif "PASSWORD" not in st.secrets and user_password == "1234":
-            # Secrets 설정 전 로컬 테스트용 기본 비밀번호
             st.session_state["authenticated"] = True
             st.rerun()
         else:
@@ -36,18 +33,32 @@ def check_password():
             
     return False
 
-# 비밀번호 인증을 통과하지 못하면 하단 앱 실행을 중단함
 if not check_password():
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 🏃 메인 시스템 구동 (인증 성공 시 이하 코드 실행)
+# 🏃 메인 시스템 구동
 # -----------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(BASE_DIR, "Running Life OS Database.xlsx")
 
-def init_db():
-    if not os.path.exists(DB_FILE):
+# 필수 시트가 누락되어 있을 경우 기존 DB를 완전한 릴리즈 스펙으로 초기화하는 함수
+def init_db(force_reset=False):
+    required_sheets = ["Athlete", "Projects", "Workouts", "DailyStatus", "Metrics", "Shoes", "Races", "CoachNotes"]
+    
+    need_init = False
+    if not os.path.exists(DB_FILE) or force_reset:
+        need_init = True
+    else:
+        # 기존 파일이 있더라도 필수 시트가 빠져있으면 재정의
+        try:
+            excel_obj = pd.ExcelFile(DB_FILE)
+            if not all(sheet in excel_obj.sheet_names for sheet in required_sheets):
+                need_init = True
+        except Exception:
+            need_init = True
+
+    if need_init:
         with pd.ExcelWriter(DB_FILE, engine='openpyxl') as writer:
             pd.DataFrame([{"AthleteID": "ATH-001", "BirthDate": "1997-10-28", "HeightCm": 180, "CurrentWeightKg": 85.0, "StartWeightKg": 115.0}]).to_excel(writer, sheet_name="Athlete", index=False)
             pd.DataFrame([{"ProjectID": "PRJ-001", "ProjectName": "Road to 10K 50", "Status": "ACTIVE", "GoalType": "Time Trial", "GoalValue": "10km Sub-50", "StartDate": "2026-09-01", "TargetDate": "2026-11-30"}]).to_excel(writer, sheet_name="Projects", index=False)
@@ -74,7 +85,7 @@ def save_data(sheet, new_df):
     with pd.ExcelWriter(DB_FILE, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
         updated.to_excel(writer, sheet_name=sheet, index=False)
 
-# 헤더 및 로그아웃 버튼
+# 상단 헤더 및 잠금 버튼
 col_title, col_logout = st.columns([3, 1])
 with col_title:
     st.title("🏃 Running Life OS")
