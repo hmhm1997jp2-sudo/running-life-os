@@ -144,7 +144,10 @@ def record_editor(sheet: str, id_col: str, label_fn, fields, key: str,
                 return
             row = match.iloc[0]
 
-            with st.form(f"form_{key}"):
+            # Streamlit은 key가 같으면 이전 입력값을 유지합니다.
+            # 대상을 바꿨을 때 값이 안 바뀌는 문제를 막으려면 key에 레코드 ID를 넣어야 합니다.
+            wk = f"{key}_{str(rid).replace(' ', '_')}"
+            with st.form(f"form_{wk}"):
                 vals = {}
                 cs = ui.cols(2, 1)
                 for i, (col, typ, label, opt) in enumerate(fields):
@@ -152,28 +155,28 @@ def record_editor(sheet: str, id_col: str, label_fn, fields, key: str,
                     cur = row.get(col, "")
                     if typ in ("num", "numopt"):
                         vals[col] = c.number_input(label, value=fnum(cur), step=1.0,
-                                                   key=f"{key}_{col}")
+                                                   key=f"{wk}_{col}")
                     elif typ == "date":
                         try:
                             dv = pd.to_datetime(cur).date()
                         except Exception:
                             dv = date.today()
-                        vals[col] = c.date_input(label, dv, key=f"{key}_{col}")
+                        vals[col] = c.date_input(label, dv, key=f"{wk}_{col}")
                     elif typ == "select":
                         lst = list(opt or [])
                         idx = lst.index(str(cur)) if str(cur) in lst else 0
-                        vals[col] = c.selectbox(label, lst, index=idx, key=f"{key}_{col}")
+                        vals[col] = c.selectbox(label, lst, index=idx, key=f"{wk}_{col}")
                     elif typ == "multi":
                         lst = list(opt or [])
                         pre = [x for x in cat_list(cur) if x in lst]
-                        vals[col] = c.multiselect(label, lst, default=pre, key=f"{key}_{col}")
+                        vals[col] = c.multiselect(label, lst, default=pre, key=f"{wk}_{col}")
                     elif typ == "area":
                         vals[col] = st.text_area(label, str(cur or ""), height=90,
-                                                 key=f"{key}_{col}")
+                                                 key=f"{wk}_{col}")
                     else:
-                        vals[col] = c.text_input(label, str(cur or ""), key=f"{key}_{col}")
+                        vals[col] = c.text_input(label, str(cur or ""), key=f"{wk}_{col}")
 
-                confirm = st.checkbox("🗑️ 삭제하려면 먼저 체크하세요", key=f"del_{key}")
+                confirm = st.checkbox("🗑️ 삭제하려면 먼저 체크하세요", key=f"del_{wk}")
                 if ui.is_mobile():
                     save = st.form_submit_button("💾 저장", width="stretch", type="primary")
                     dele = st.form_submit_button("🗑️ 삭제", width="stretch")
@@ -229,6 +232,46 @@ def zone_order(model: str) -> list[str]:
 
 def zone_scale(model: str):
     return alt.Scale(domain=zone_order(model), range=ZONE_COLORS + ["#eef2f7"])
+
+
+def zone_bar_html(bounds, model: str) -> str:
+    """bpm 축 위에 존 구간을 비율대로 그린 막대."""
+    if not bounds:
+        return ""
+    lo0, hi0 = bounds[0][1], bounds[-1][2]
+    span = max(hi0 - lo0, 1)
+    seg = ""
+    for i, (n, lo, hi) in enumerate(bounds):
+        w = (hi - lo) / span * 100
+        short = n.split()[0]
+        seg += (f"<div style='flex:0 0 {w:.2f}%;background:{ZONE_COLORS[i]};"
+                f"color:{'#1b2430' if i < 3 else '#ffffff'}'>"
+                f"<span class='zn'>{short}</span>"
+                f"<span class='zr'>{lo:.0f}–{hi:.0f}</span></div>")
+    return (f"<div class='rl-zbar'>{seg}</div>"
+            f"<div class='rl-zends'><span>{lo0:.0f} bpm</span>"
+            f"<span>{hi0:.0f} bpm</span></div>")
+
+
+def zone_compare_html(lthr, hr_rest, hr_max) -> str:
+    """세 기준의 존 경계를 한 표로. 행=존, 열=기준."""
+    models = list(ana.ZONE_MODELS)
+    cols = {m: ana.zone_bounds(m, lthr, hr_rest, hr_max) for m in models}
+    if not cols.get("%LTHR"):
+        return ""
+    head = "".join(f"<th>{m}</th>" for m in models)
+    body = ""
+    for i in range(5):
+        name = cols["%LTHR"][i][0]
+        cells = ""
+        for m in models:
+            b = cols[m]
+            klass = "prim" if m == "%LTHR" else "sec"
+            cells += (f"<td class='{klass}'>{b[i][1]:.0f}–{b[i][2]:.0f}</td>"
+                      if b else f"<td class='sec'>—</td>")
+        body += (f"<tr><td><span class='rl-zdot' style='background:{ZONE_COLORS[i]}'></span>"
+                 f"{name}</td>{cells}</tr>")
+    return f"<table class='rl-ztable'><tr><th>존</th>{head}</tr>{body}</table>"
 
 
 def zone_model_picker(key: str) -> str:
@@ -314,6 +357,9 @@ ATH = db.get_athlete()
 HR_REST, HR_MAX = fnum(ATH.get("HRRest"), 55), fnum(ATH.get("HRMax"), 190)
 LTHR = fnum(ATH.get("LTHR"), 0) or None
 SEX = str(ATH.get("Sex", "M")) or "M"
+# 프로필 이력의 '기본값'(가장 오래된 시점 이전에 적용할 값)
+PROFILE_NOW = {"LTHR": LTHR, "HRRest": HR_REST, "HRMax": HR_MAX,
+               "WeightKg": fnum(ATH.get("CurrentWeightKg"), 0) or None}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -357,12 +403,13 @@ with tab_dash:
     G = ana.latest_garmin(df_daily, df_metrics)
 
     # 계산 지표는 보조 — 기록으로부터 직접 산출 (교차검증용)
-    daily = ana.daily_load_series(df_w, HR_REST, HR_MAX, SEX)
+    daily = ana.daily_load_series(df_w, HR_REST, HR_MAX, SEX,
+                                  hist=ana.profile_history(df_metrics, PROFILE_NOW))
     summary = ana.load_summary(daily)
     weekly = ana.weekly_summary(df_w)
     ZM = st.session_state.get("zone_model", ana.DEFAULT_ZONE_MODEL)
-    lthr_hist = ana.lthr_history(df_metrics, LTHR, HR_MAX)
-    zoned = ana.assign_zones(df_w, ZM, lthr_hist, HR_REST, HR_MAX)
+    P_HIST = ana.profile_history(df_metrics, PROFILE_NOW)
+    zoned = ana.assign_zones(df_w, ZM, P_HIST)
     inten = ana.intensity_distribution(zoned, ZM)
     evo2 = ana.effective_vo2max(df_w, HR_REST, HR_MAX)
 
@@ -902,7 +949,7 @@ with tab_work:
     with s_zone:
         df_w = db.load_data("Workouts")
         df_met = db.load_data("Metrics")
-        hist = ana.lthr_history(df_met, LTHR, HR_MAX)
+        hist = ana.profile_history(df_met, PROFILE_NOW)
         cur_lthr = float(hist["LTHR"].iloc[-1]) if not hist.empty else ana.resolve_lthr(LTHR, HR_MAX)
 
         with ui.card("zpick"):
@@ -918,25 +965,21 @@ with tab_work:
                 basis = (f"LTHR {cur_lthr:.0f} bpm" if ZM == "%LTHR"
                          else (f"최대 {HR_MAX:.0f} bpm" if ZM == "%HRmax"
                                else f"{HR_REST:.0f}–{HR_MAX:.0f} bpm"))
-                chips = "".join(
-                    f"<span class='rl-pill' style='background:{ZONE_COLORS[i]}22;"
-                    f"color:var(--rl-text);border:1px solid {ZONE_COLORS[i]}'>"
-                    f"{n} {lo:.0f}–{hi:.0f}</span>"
-                    for i, (n, lo, hi) in enumerate(bounds))
-                st.markdown(
-                    f"<div style='display:flex;flex-wrap:wrap;gap:6px;margin-top:8px'>{chips}</div>"
-                    f"<p class='rl-sub' style='margin-top:8px'>기준: {basis}</p>",
-                    unsafe_allow_html=True)
+                st.markdown("<div style='height:6px'></div>" + zone_bar_html(bounds, ZM) +
+                            f"<p class='rl-sub' style='margin-top:10px'>기준: {basis}</p>",
+                            unsafe_allow_html=True)
             else:
                 st.warning("프로필에서 최대 심박(과 LTHR)을 먼저 입력하세요.")
 
-        zoned = ana.assign_zones(df_w, ZM, hist, HR_REST, HR_MAX)
+        zoned = ana.assign_zones(df_w, ZM, hist)
 
-        if len(hist) > 1 and ZM == "%LTHR":
+        chg = ana.profile_changes(hist)
+        if not chg.empty:
             with ui.card("zlthr"):
-                ui.head("🧪 적용된 LTHR", "훈련 시점마다 그때의 LTHR로 존을 매깁니다")
-                ui.rows([(f"{d:%Y-%m-%d} 이후", f"{v:.0f} bpm")
-                         for d, v in zip(hist["Date"], hist["LTHR"])])
+                ui.head("🧪 적용된 프로필", "훈련 시점마다 그때의 값으로 존을 매깁니다")
+                ui.rows([(f"{r.Date:%Y-%m-%d} 이후",
+                          f"LTHR {r.LTHR:.0f} · 최대 {r.HRMax:.0f} · 안정시 {r.HRRest:.0f}")
+                         for r in chg.itertuples()])
 
         tbl = ana.zone_table(zoned, bounds, days_z, ZM)
         if tbl.empty:
@@ -1058,9 +1101,8 @@ with tab_work:
                     ui.head("🎚️ 강도 분포 (최근 90일)",
                             "자세한 존 분석은 ‘🎚️ 심박존’ 탭에서")
                     _zm = st.session_state.get("zone_model", ana.DEFAULT_ZONE_MODEL)
-                    _zd = ana.assign_zones(df_w, _zm,
-                                           ana.lthr_history(db.load_data("Metrics"), LTHR, HR_MAX),
-                                           HR_REST, HR_MAX)
+                    _zd = ana.assign_zones(
+                        df_w, _zm, ana.profile_history(db.load_data("Metrics"), PROFILE_NOW))
                     if inten := ana.intensity_distribution(_zd, _zm):
                         zd = pd.DataFrame({"존": list(inten["zone_pct"]),
                                            "비율": list(inten["zone_pct"].values())})
@@ -1501,6 +1543,9 @@ with tab_admin:
         with ui.card("prof"):
             ui.head("👤 선수 프로필", "심박 설정이 모든 분석의 기준값입니다 — 꼭 실제 값으로 맞추세요")
             with st.form("f_ath"):
+                eff = st.date_input("적용일", date.today(), key="prof_eff",
+                                    help="이 날짜부터 아래 값이 적용됩니다. "
+                                         "이전 훈련은 그 전 값으로 계산됩니다.")
                 p1 = ui.cols(3, 1, keep_row=True)
                 a_name = p1[0].text_input("이름", str(ATH.get("Name", "")))
                 a_sex = p1[1 % len(p1)].selectbox("성별", ["M", "F"],
@@ -1518,52 +1563,69 @@ with tab_admin:
                     db.save_athlete({"Name": a_name, "Sex": a_sex, "HeightCm": a_h,
                                      "HRRest": a_rest, "HRMax": a_max, "LTHR": a_lt,
                                      "CurrentWeightKg": a_w, "StartWeightKg": a_sw})
-                    st.success("저장 완료")
+                    # 수치가 바뀐 경우에만 변경 이력 한 줄 추가
+                    prev = {"HRRest": HR_REST, "HRMax": HR_MAX,
+                            "LTHR": ana.resolve_lthr(LTHR, HR_MAX),
+                            "WeightKg": fnum(ATH.get("CurrentWeightKg"), 0)}
+                    now = {"HRRest": a_rest, "HRMax": a_max, "LTHR": a_lt, "WeightKg": a_w}
+                    if any(abs(fnum(now[k]) - fnum(prev.get(k))) > 0.001 for k in now):
+                        db.append_rows("Metrics", pd.DataFrame([{
+                            "MetricID": new_id("MET"),
+                            "MetricDate": eff.strftime("%Y-%m-%d"),
+                            "HRRest": a_rest, "HRMax": a_max, "LTHR": a_lt,
+                            "WeightKg": a_w, "Notes": "프로필 변경"}]))
+                        st.success(f"저장 완료 — {eff:%Y-%m-%d}부터 적용되는 변경 이력을 남겼습니다")
+                    else:
+                        st.success("저장 완료")
                     st.rerun()
         df_metrics_p = db.load_data("Metrics")
-        hist_p = ana.lthr_history(df_metrics_p, LTHR, HR_MAX)
+        hist_p = ana.profile_history(df_metrics_p, PROFILE_NOW)
         cur_lthr = float(hist_p["LTHR"].iloc[-1]) if not hist_p.empty else ana.resolve_lthr(LTHR, HR_MAX)
 
         with ui.card("zonetbl"):
-            ui.head("🎚️ 심박존 표", f"현재 적용 LTHR {cur_lthr:.0f} bpm · 최대 {HR_MAX:.0f} bpm")
-            zc = ui.cols(3, 1)
-            for i, m in enumerate(ana.ZONE_MODELS):
-                bounds = ana.zone_bounds(m, cur_lthr, HR_REST, HR_MAX)
-                with zc[i % len(zc)]:
-                    st.markdown(f"<p class='rl-sub' style='margin:6px 0 2px'><b>{m}</b></p>",
+            ui.head("🎚️ 심박존",
+                    f"LTHR {cur_lthr:.0f} bpm · 안정시 {HR_REST:.0f} · 최대 {HR_MAX:.0f} bpm")
+            lthr_bounds = ana.zone_bounds("%LTHR", cur_lthr, HR_REST, HR_MAX)
+            if lthr_bounds:
+                st.markdown(zone_bar_html(lthr_bounds, "%LTHR"), unsafe_allow_html=True)
+                st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+                if ui.is_mobile():
+                    ui.rows([(f"{n}", f"{lo:.0f}–{hi:.0f} bpm") for n, lo, hi in lthr_bounds])
+                    with st.expander("다른 기준과 비교"):
+                        st.markdown(zone_compare_html(cur_lthr, HR_REST, HR_MAX),
+                                    unsafe_allow_html=True)
+                else:
+                    st.markdown(zone_compare_html(cur_lthr, HR_REST, HR_MAX),
                                 unsafe_allow_html=True)
-                    if bounds:
-                        ui.rows([(n, f"{lo:.0f}–{hi:.0f}") for n, lo, hi in bounds])
-                    else:
-                        st.caption("값 부족")
-            st.caption("앱 전체에 적용할 기준은 ‘🏃 훈련 & 리포트 → 🎚️ 심박존’ 탭에서 고릅니다.")
+                st.caption("막대와 굵은 숫자는 시계와 같은 **%LTHR** 기준입니다. "
+                           "앱 전체에 적용할 기준은 ‘🏃 훈련 & 리포트 → 🎚️ 심박존’ 탭에서 바꿉니다.")
+            else:
+                st.caption("최대 심박과 LTHR을 먼저 입력하세요.")
 
-        with ui.card("lthrhist"):
-            ui.head("🧪 젖산역치(LTHR) 변경 이력",
-                    "값이 바뀔 때만 기록하세요 — 과거 훈련은 그 시점의 LTHR로 존이 매겨집니다")
-            if not hist_p.empty:
-                ui.rows([(f"{d:%Y-%m-%d}", f"{v:.0f} bpm")
-                         for d, v in zip(hist_p["Date"], hist_p["LTHR"])][-8:])
-            with st.form("f_lthr", clear_on_submit=True):
-                lc = ui.cols(2, 1, keep_row=True)
-                l_date = lc[0].date_input("변경일", date.today(), key="lthr_date")
-                l_val = lc[1 % len(lc)].number_input("새 LTHR (bpm)", 0, 230,
-                                                     int(cur_lthr), key="lthr_val")
-                l_pace = st.text_input("LT 페이스 (선택)", "", placeholder="4:50")
-                if st.form_submit_button("변경 기록 추가", width="stretch", type="primary"):
-                    if l_val <= 0:
-                        st.error("LTHR 값을 입력하세요.")
-                    else:
-                        db.append_rows("Metrics", pd.DataFrame([{
-                            "MetricID": new_id("MET"),
-                            "MetricDate": l_date.strftime("%Y-%m-%d"),
-                            "LTHR": l_val, "LTPace": l_pace,
-                            "Notes": "LTHR 변경"}]))
-                        db.save_athlete({"LTHR": l_val})
-                        st.success(f"LTHR {l_val} bpm 기록 완료")
-                        st.rerun()
+        with ui.card("profhist"):
+            ui.head("🗓️ 프로필 변경 이력",
+                    "체중·심박·LTHR이 바뀐 시점 — 과거 훈련은 그때 값으로 계산됩니다")
+            chg_p = ana.profile_changes(hist_p)
+            if chg_p.empty:
+                st.caption("아직 변경 이력이 없습니다. 위에서 **적용일**과 함께 저장하면 "
+                           "이 목록에 쌓이고, 심박존·훈련 부하가 시점별로 다시 계산됩니다.")
+            else:
+                if ui.is_mobile():
+                    ui.item_list([
+                        (f"{r.Date:%Y-%m-%d}",
+                         f"LTHR {r.LTHR:.0f} · 최대 {r.HRMax:.0f} · 안정시 {r.HRRest:.0f}"
+                         + (f" · {r.WeightKg:.1f}kg" if pd.notna(r.WeightKg) else ""))
+                        for r in chg_p.iloc[::-1].itertuples()])
+                else:
+                    disp = chg_p.iloc[::-1].copy()
+                    disp["적용일"] = disp["Date"].dt.strftime("%Y-%m-%d")
+                    disp = disp.rename(columns={"LTHR": "LTHR", "HRRest": "안정시",
+                                                "HRMax": "최대", "WeightKg": "체중(kg)",
+                                                "BodyFatPct": "체지방(%)"})
+                    st.dataframe(disp[["적용일", "LTHR", "안정시", "최대", "체중(kg)", "체지방(%)"]],
+                                 width="stretch", hide_index=True)
+                st.caption("이력은 ‘⚙️ 관리 & 코치 → 📈 가민 주간’의 수정/삭제에서 고칠 수 있습니다.")
 
-    # ── 가민 일일 지표 입력 ────────────────────────────────────────────
     with a2:
         with ui.card("gdaily"):
             ui.head("⌚ 가민 일일 지표", "Garmin Connect 홈 화면에서 보고 그대로 옮겨 적으세요")
