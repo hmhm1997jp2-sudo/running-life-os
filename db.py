@@ -42,8 +42,9 @@ SCHEMA: dict[str, list[str]] = {
                     "RecoveryTimeHr", "TrainingReadiness", "BodyBattery",
                     "HRVStatus", "HRVms", "SleepScore", "RestingHR",
                     "IntensityMinutes", "Notes"],
-    # ── 가민 주간 지표 (Connect 통계에서 주 1회 확인) ──────────────────────
-    "Metrics": ["MetricID", "MetricDate", "VO2Max", "FitnessAge",
+    # ── 프로필·지표 변경 이력 (날짜별 스냅샷) ─────────────────────────────
+    #    체중/심박/LTHR 이 바뀐 시점을 남기면 과거 훈련은 그 시점 값으로 계산됩니다.
+    "Metrics": ["MetricID", "MetricDate", "HRRest", "HRMax", "VO2Max", "FitnessAge",
                 "EnduranceScore", "HillScore",
                 "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
                 "Pred5K", "Pred10K", "PredHalf", "PredFull",
@@ -68,6 +69,7 @@ NUMERIC_COLS = {
     "TargetDistanceKm",
     # 가민 지표
     "AcuteLoad", "LoadRatio", "RecoveryTimeHr", "HRVms", "IntensityMinutes",
+    "HRRest", "HRMax",
     "FitnessAge", "EnduranceScore", "HillScore",
     "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
     "AerobicTE", "AnaerobicTE",
@@ -94,6 +96,26 @@ def backend_name() -> str:
     return "Google Sheets" if use_gsheets() else "로컬 엑셀 파일"
 
 
+class QuotaError(RuntimeError):
+    """Google Sheets 분당 호출 한도 초과."""
+
+
+def _retry(fn, *args, tries: int = 4, **kwargs):
+    """429(한도 초과) 시 잠깐 쉬었다 다시 시도."""
+    import time
+    last = None
+    for i in range(tries):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:  # gspread.exceptions.APIError 포함
+            last = e
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            if code not in (429, 500, 503):
+                raise
+            time.sleep(1.5 * (i + 1))
+    raise QuotaError(str(last))
+
+
 @st.cache_resource(show_spinner=False)
 def _spreadsheet():
     """gspread 스프레드시트 핸들 (세션당 1회 연결)."""
@@ -115,10 +137,14 @@ def _spreadsheet():
 # 초기화
 # ---------------------------------------------------------------------------
 def init_db() -> None:
-    """없는 시트를 만들고 헤더를 채웁니다. 기존 데이터는 건드리지 않습니다."""
+    """없는 시트를 만들고 헤더를 채웁니다. 기존 데이터는 건드리지 않습니다.
+    Streamlit은 조작할 때마다 스크립트를 처음부터 다시 실행하므로,
+    세션당 1회만 수행해 Sheets 호출 수를 줄입니다."""
+    if st.session_state.get("_db_init_done"):
+        return
     if use_gsheets():
         sh = _spreadsheet()
-        existing = {ws.title for ws in sh.worksheets()}
+        existing = {ws.title for ws in _retry(sh.worksheets)}
         for name, cols in SCHEMA.items():
             if name not in existing:
                 ws = sh.add_worksheet(title=name, rows=200, cols=max(12, len(cols)))
@@ -142,6 +168,7 @@ def init_db() -> None:
                 for s in missing:
                     data[s] = pd.DataFrame(columns=SCHEMA[s])
                 _atomic_excel_write(data)
+    st.session_state["_db_init_done"] = True
 
 
 def _atomic_excel_write(sheets: dict[str, pd.DataFrame]) -> None:
@@ -171,33 +198,55 @@ def _normalize(df: pd.DataFrame, sheet: str) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def _read_raw(sheet: str, version: int = 0) -> pd.DataFrame:
+@st.cache_data(ttl=300, show_spinner=False)
+def _read_all(version: int = 0) -> dict[str, pd.DataFrame]:
+    """
+    모든 시트를 '한 번의 호출'로 읽습니다.
+    시트마다 따로 읽으면 화면 한 번 그릴 때 10회 가까이 호출돼
+    Google Sheets 분당 한도(사용자당 60회 읽기)에 금방 걸립니다.
+    """
+    out: dict[str, pd.DataFrame] = {}
     if use_gsheets():
-        ws = _spreadsheet().worksheet(sheet)
-        values = ws.get_all_values()
-        if not values:
-            return pd.DataFrame(columns=SCHEMA.get(sheet, []))
-        header, rows = values[0], values[1:]
-        df = pd.DataFrame(rows, columns=header)
-        df = df.replace("", np.nan)
-        return df.dropna(how="all")
-    return pd.read_excel(EXCEL_FILE, sheet_name=sheet)
+        sh = _spreadsheet()
+        names = list(SCHEMA)
+        resp = _retry(sh.values_batch_get, names)
+        ranges = resp.get("valueRanges", [])
+        for name, vr in zip(names, ranges):
+            values = vr.get("values", []) or []
+            if not values:
+                out[name] = pd.DataFrame(columns=SCHEMA[name])
+                continue
+            header = values[0]
+            width = len(header)
+            rows = [r + [""] * (width - len(r)) for r in values[1:]]
+            df = pd.DataFrame(rows, columns=header).replace("", np.nan)
+            out[name] = df.dropna(how="all")
+    else:
+        xl = pd.ExcelFile(EXCEL_FILE)
+        for name in SCHEMA:
+            out[name] = (pd.read_excel(EXCEL_FILE, sheet_name=name)
+                         if name in xl.sheet_names else pd.DataFrame(columns=SCHEMA[name]))
+    return out
 
 
 def load_data(sheet: str) -> pd.DataFrame:
     try:
-        raw = _read_raw(sheet, st.session_state.get("_db_version", 0))
+        raw = _read_all(st.session_state.get("_db_version", 0)).get(
+            sheet, pd.DataFrame(columns=SCHEMA.get(sheet, [])))
+    except QuotaError:
+        st.error("⏳ Google Sheets 호출 한도(분당)를 넘었습니다. "
+                 "1분쯤 기다렸다가 새로고침해 주세요. 데이터는 안전합니다.")
+        st.stop()
     except Exception as e:
         st.error(f"'{sheet}' 시트를 읽지 못했습니다: {e}")
         raw = pd.DataFrame(columns=SCHEMA.get(sheet, []))
-    return _normalize(raw, sheet)
+    return _normalize(raw.copy(), sheet)
 
 
 def _bump():
     """캐시 무효화 — 쓰기 직후 호출."""
     st.session_state["_db_version"] = st.session_state.get("_db_version", 0) + 1
-    _read_raw.clear()
+    _read_all.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -214,10 +263,10 @@ def write_sheet(sheet: str, df: pd.DataFrame) -> None:
     """시트 전체 덮어쓰기 (수정/삭제용)."""
     cols = SCHEMA.get(sheet, list(df.columns))
     if use_gsheets():
-        ws = _spreadsheet().worksheet(sheet)
-        ws.clear()
-        ws.update(range_name="A1", values=[cols] + _to_cells(df, cols),
-                  value_input_option="USER_ENTERED")
+        ws = _retry(_spreadsheet().worksheet, sheet)
+        _retry(ws.clear)
+        _retry(ws.update, range_name="A1", values=[cols] + _to_cells(df, cols),
+               value_input_option="USER_ENTERED")
     else:
         xl = pd.ExcelFile(EXCEL_FILE)
         data = {s: (df.reindex(columns=cols) if s == sheet
@@ -233,8 +282,8 @@ def append_rows(sheet: str, new_df: pd.DataFrame) -> None:
         return
     cols = SCHEMA.get(sheet, list(new_df.columns))
     if use_gsheets():
-        ws = _spreadsheet().worksheet(sheet)
-        ws.append_rows(_to_cells(new_df, cols), value_input_option="USER_ENTERED")
+        ws = _retry(_spreadsheet().worksheet, sheet)
+        _retry(ws.append_rows, _to_cells(new_df, cols), value_input_option="USER_ENTERED")
         _bump()
     else:
         old = load_data(sheet)
