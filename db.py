@@ -36,6 +36,8 @@ SCHEMA: dict[str, list[str]] = {
                  "DurationMinutes", "PaceSec", "AvgHeartRate", "MaxHeartRate", "AvgPower",
                  "AvgCadence", "ElevationGainM", "Temperature", "Surface", "ShoeID",
                  "AerobicTE", "AnaerobicTE", "PrimaryBenefit",
+                 # 러닝 다이나믹스 (가민 활동 상세 CSV에서 자동 입력)
+                 "Calories", "AvgGCTms", "AvgStrideM", "AvgVertOscCm", "AvgVertRatioPct",
                  "RPE", "LegFatigue", "CardioFatigue", "Notes", "SourceKey"],
     # ── 가민 일일 지표 (Connect 홈에서 매일 보이는 값) ──────────────────────
     "DailyStatus": ["StatusID", "StatusDate", "TrainingStatus", "AcuteLoad", "LoadRatio",
@@ -54,6 +56,12 @@ SCHEMA: dict[str, list[str]] = {
               "TargetDistanceKm", "Status", "Category", "Notes"],
     "Races": ["RaceID", "ProjectID", "RaceDate", "RaceName", "Distance", "DistanceKm",
               "GoalTime", "ActualTime", "ShoeID", "ResultStatus", "Notes"],
+    # ── 랩(구간) 기록 — 활동 상세 CSV를 올리면 함께 저장됩니다 ───────────
+    "Laps": ["LapID", "WorkoutID", "WorkoutDate", "WorkoutType", "LapNo",
+             "CumMinutes", "DistanceKm", "DurationMinutes",
+             "PaceSec", "AvgHeartRate", "MaxHeartRate", "AvgPower", "AvgCadence",
+             "ElevGainM", "ElevLossM", "AvgGCTms", "AvgStrideM",
+             "AvgVertOscCm", "AvgVertRatioPct", "Calories", "TempC"],
     "CoachNotes": ["NoteID", "ProjectID", "NoteDate", "Category", "NoteText"],
     "TrainingPlans": ["PlanID", "PlanDate", "GarminPlan", "CopilotPlan",
                       "SelectedPlan", "Status", "Notes"],
@@ -73,6 +81,9 @@ NUMERIC_COLS = {
     "FitnessAge", "EnduranceScore", "HillScore",
     "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
     "AerobicTE", "AnaerobicTE",
+    "LapNo", "ElevGainM", "ElevLossM",
+    "Calories", "AvgGCTms", "AvgStrideM", "AvgVertOscCm", "AvgVertRatioPct", "TempC",
+    "CumMinutes",
 }
 
 DEFAULT_ATHLETE = {
