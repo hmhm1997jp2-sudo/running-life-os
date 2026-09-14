@@ -27,6 +27,24 @@ WORKOUT_TYPES = ["Easy", "Recovery", "LSD", "Tempo", "Threshold",
                  "Interval", "Sprint", "Race", "Cross Training"]
 SURFACES = ["로드", "트랙", "트레드밀", "트레일", "기타"]
 
+# 러닝화 용도 — 복수 선택 (한 켤레가 여러 역할을 겸하는 경우가 많음)
+SHOE_CATEGORIES = [
+    "데일리 트레이너",   # 매일 신는 기본 쿠션화
+    "롱런 / LSD",        # 장거리용 쿠션·안정성
+    "회복 (맥스쿠션)",    # 리커버리런 전용, 두꺼운 쿠션
+    "템포 / 업템포",      # 빠른 지속주
+    "인터벌 / 스피드",    # 짧고 빠른 반복, 가벼움
+    "레이스 (카본)",      # 대회용 카본 플레이트
+    "트레일",
+    "트레드밀",
+    "워킹 / 일상",
+]
+
+
+def cat_list(v) -> list[str]:
+    """쉼표로 저장된 용도 문자열 → 리스트"""
+    return [c.strip() for c in str(v or "").split(",") if c.strip()]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 공통 유틸
@@ -72,6 +90,133 @@ def alt_base(df: pd.DataFrame):
     return alt.Chart(df).properties(height=ui.chart_height()).configure_view(
         strokeWidth=0).configure_axis(grid=True, gridOpacity=.25, domain=False,
                                       labelColor="#64748b", titleColor="#64748b")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 공용 레코드 수정 / 삭제기
+#   fields: (컬럼, 타입, 라벨, 옵션) 리스트
+#   타입   : text | area | num | numopt(0이면 빈칸 저장) | date | select
+# ═══════════════════════════════════════════════════════════════════════════
+def record_editor(sheet: str, id_col: str, label_fn, fields, key: str,
+                  derive=None, title: str = "✏️ 수정 / 삭제") -> None:
+    df = db.load_data(sheet)
+    if df.empty:
+        return
+    with ui.card(f"ed_{key}"):
+        # 저장 직후에도 펼쳐진 상태를 유지 (매번 다시 여는 번거로움 방지)
+        with st.expander(title, expanded=st.session_state.get(f"exp_{key}", False)):
+            opts, seen = {}, set()
+            for _, r in df.iloc[::-1].iterrows():
+                lab = label_fn(r)
+                while lab in seen:          # 같은 라벨이 있으면 구분자 추가
+                    lab += " "
+                seen.add(lab)
+                opts[lab] = r[id_col]
+            pick = st.selectbox("대상 선택", list(opts), key=f"sel_{key}")
+            rid = opts[pick]
+            match = df[df[id_col].astype(str) == str(rid)]
+            if match.empty:
+                st.caption("대상을 찾지 못했습니다.")
+                return
+            row = match.iloc[0]
+
+            with st.form(f"form_{key}"):
+                vals = {}
+                cs = ui.cols(2, 1)
+                for i, (col, typ, label, opt) in enumerate(fields):
+                    c = cs[i % len(cs)] if typ != "area" else st
+                    cur = row.get(col, "")
+                    if typ in ("num", "numopt"):
+                        vals[col] = c.number_input(label, value=fnum(cur), step=1.0,
+                                                   key=f"{key}_{col}")
+                    elif typ == "date":
+                        try:
+                            dv = pd.to_datetime(cur).date()
+                        except Exception:
+                            dv = date.today()
+                        vals[col] = c.date_input(label, dv, key=f"{key}_{col}")
+                    elif typ == "select":
+                        lst = list(opt or [])
+                        idx = lst.index(str(cur)) if str(cur) in lst else 0
+                        vals[col] = c.selectbox(label, lst, index=idx, key=f"{key}_{col}")
+                    elif typ == "multi":
+                        lst = list(opt or [])
+                        pre = [x for x in cat_list(cur) if x in lst]
+                        vals[col] = c.multiselect(label, lst, default=pre, key=f"{key}_{col}")
+                    elif typ == "area":
+                        vals[col] = st.text_area(label, str(cur or ""), height=90,
+                                                 key=f"{key}_{col}")
+                    else:
+                        vals[col] = c.text_input(label, str(cur or ""), key=f"{key}_{col}")
+
+                confirm = st.checkbox("🗑️ 삭제하려면 먼저 체크하세요", key=f"del_{key}")
+                if ui.is_mobile():
+                    save = st.form_submit_button("💾 저장", width="stretch", type="primary")
+                    dele = st.form_submit_button("🗑️ 삭제", width="stretch")
+                else:
+                    q1, q2 = st.columns(2)
+                    save = q1.form_submit_button("💾 저장", width="stretch", type="primary")
+                    dele = q2.form_submit_button("🗑️ 삭제", width="stretch")
+
+                if save:
+                    out = {}
+                    for (col, typ, _l, _o) in fields:
+                        v = vals[col]
+                        if typ == "date":
+                            out[col] = v.strftime("%Y-%m-%d")
+                        elif typ == "multi":
+                            out[col] = ", ".join(v)
+                        elif typ == "numopt":
+                            out[col] = "" if fnum(v) == 0 else v
+                        else:
+                            out[col] = v
+                    if derive:
+                        out.update(derive(out))
+                    idx = df[id_col].astype(str) == str(rid)
+                    for col, v in out.items():
+                        if col not in df.columns:
+                            df[col] = ""
+                        df.loc[idx, col] = v
+                    db.write_sheet(sheet, df)
+                    st.session_state[f"exp_{key}"] = True
+                    st.success("수정 완료")
+                    st.rerun()
+
+                if dele:
+                    if not confirm:
+                        st.error("삭제하려면 위의 확인 체크박스를 먼저 선택하세요.")
+                    else:
+                        db.write_sheet(sheet, df[df[id_col].astype(str) != str(rid)])
+                        st.session_state[f"exp_{key}"] = False
+                        st.warning("삭제 완료")
+                        st.rerun()
+
+
+RACE_DIST_KM = {"5km": 5.0, "10km": 10.0, "Half Marathon": 21.0975, "Full Marathon": 42.195}
+
+
+# 존 색상 — 모든 차트에서 동일하게 유지 (Z1 연회색 → Z5 빨강)
+ZONE_COLORS = ["#cbd5e1", "#60a5fa", "#34d399", "#fbbf24", "#ef4444"]
+
+
+def zone_order(model: str) -> list[str]:
+    return [n for n, _, _ in ana.ZONE_MODELS[model]] + [ana.BELOW_Z1]
+
+
+def zone_scale(model: str):
+    return alt.Scale(domain=zone_order(model), range=ZONE_COLORS + ["#eef2f7"])
+
+
+def zone_model_picker(key: str) -> str:
+    """심박존 기준 선택 (세션 공통)."""
+    cur = st.session_state.get("zone_model", ana.DEFAULT_ZONE_MODEL)
+    models = list(ana.ZONE_MODELS)
+    pick = st.radio("존 기준", models, index=models.index(cur) if cur in models else 0,
+                    horizontal=True, key=f"zm_{key}",
+                    help="%LTHR = 가민 시계의 젖산역치 기준 · %HRmax = 최대심박 기준 · "
+                         "%HRR = 심박 여유율(Karvonen)")
+    st.session_state["zone_model"] = pick
+    return pick
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -191,7 +336,10 @@ with tab_dash:
     daily = ana.daily_load_series(df_w, HR_REST, HR_MAX, SEX)
     summary = ana.load_summary(daily)
     weekly = ana.weekly_summary(df_w)
-    inten = ana.intensity_distribution(df_w, HR_REST, HR_MAX, LTHR)
+    ZM = st.session_state.get("zone_model", ana.DEFAULT_ZONE_MODEL)
+    lthr_hist = ana.lthr_history(df_metrics, LTHR, HR_MAX)
+    zoned = ana.assign_zones(df_w, ZM, lthr_hist, HR_REST, HR_MAX)
+    inten = ana.intensity_distribution(zoned, ZM)
     evo2 = ana.effective_vo2max(df_w, HR_REST, HR_MAX)
 
     def gv(key, fmt="{}", suffix="", dash="—"):
@@ -263,7 +411,7 @@ with tab_dash:
             ui.head("📈 가민 기량", gdate("VO2Max"))
             ui.metrics([
                 ("VO₂max", gv("VO2Max", "{:.0f}"), None),
-                ("피트니스 나이", gv("FitnessAge", "{:.0f}", "세"), None),
+                ("피트니스 나이", gv("FitnessAge", "{:.0f}"), "세"),
                 ("Endurance", gv("EnduranceScore", "{:.0f}"), ana.endurance_tier(G.get("EnduranceScore"))),
                 ("Hill Score", gv("HillScore", "{:.0f}"), None),
             ], per_row_pc=4)
@@ -405,17 +553,21 @@ with tab_dash:
 # TAB 2 · 훈련 & 리포트
 # ═══════════════════════════════════════════════════════════════════════════
 with tab_work:
-    labels = (["➕", "📋", "⌚", "📊", "🔮", "📥"] if ui.is_mobile()
-              else ["➕ 기록 입력", "📋 훈련 이력", "⌚ 가민 추이", "📊 계산 통계",
-                    "🔮 기량 예측", "📥 가져오기"])
-    s_new, s_hist, s_garmin, s_stat, s_pred, s_imp = st.tabs(labels)
+    labels = (["➕", "📋", "⌚", "🎚️", "📊", "🔮", "📥"] if ui.is_mobile()
+              else ["➕ 기록 입력", "📋 훈련 이력", "⌚ 가민 추이", "🎚️ 심박존",
+                    "📊 계산 통계", "🔮 기량 예측", "📥 가져오기"])
+    s_new, s_hist, s_garmin, s_zone, s_stat, s_pred, s_imp = st.tabs(labels)
 
     df_proj = db.load_data("Projects")
     df_shoes = db.load_data("Shoes")
     proj_opts = {"(없음)": ""} | {r["ProjectName"]: r["ProjectID"] for _, r in df_proj.iterrows()}
-    shoe_opts = {"(없음)": ""} | {
-        f"{r['ShoeName']}": r["ShoeID"] for _, r in df_shoes.iterrows()
-        if str(r.get("Status", "")).upper() != "RETIRED"}
+    shoe_opts = {"(없음)": ""}
+    for _, r in df_shoes.iterrows():
+        if str(r.get("Status", "")).upper() == "RETIRED":
+            continue
+        cats = cat_list(r.get("Category"))
+        lab = f"{r['ShoeName']}" + (f" — {' / '.join(cats[:2])}" if cats else "")
+        shoe_opts[lab] = r["ShoeID"]
 
     # ── 2-1 기록 입력 ──────────────────────────────────────────────────────
     with s_new:
@@ -722,6 +874,129 @@ with tab_work:
                             tooltip=["WorkoutDate:T", "WorkoutType", "AerobicTE", "AnaerobicTE"]
                         ).properties(height=ui.chart_height(300, 260)), width="stretch")
 
+    # ── 2-4 심박존 분석 ────────────────────────────────────────────────────
+    with s_zone:
+        df_w = db.load_data("Workouts")
+        df_met = db.load_data("Metrics")
+        hist = ana.lthr_history(df_met, LTHR, HR_MAX)
+        cur_lthr = float(hist["LTHR"].iloc[-1]) if not hist.empty else ana.resolve_lthr(LTHR, HR_MAX)
+
+        with ui.card("zpick"):
+            ui.head("🎚️ 존 기준", "고른 기준이 대시보드 강도 분포에도 함께 적용됩니다")
+            ZM = zone_model_picker("zone")
+            zp = ui.cols(2, 1, keep_row=True)
+            days_z = zp[0].selectbox("분석 기간", [30, 90, 180, 365],
+                                     index=1, format_func=lambda x: f"최근 {x}일", key="zdays")
+            wk_z = zp[1 % len(zp)].selectbox("주간 추이 범위", [8, 16, 26, 52],
+                                             index=1, format_func=lambda x: f"{x}주", key="zwk")
+            bounds = ana.zone_bounds(ZM, cur_lthr, HR_REST, HR_MAX)
+            if bounds:
+                basis = (f"LTHR {cur_lthr:.0f} bpm" if ZM == "%LTHR"
+                         else (f"최대 {HR_MAX:.0f} bpm" if ZM == "%HRmax"
+                               else f"{HR_REST:.0f}–{HR_MAX:.0f} bpm"))
+                chips = "".join(
+                    f"<span class='rl-pill' style='background:{ZONE_COLORS[i]}22;"
+                    f"color:var(--rl-text);border:1px solid {ZONE_COLORS[i]}'>"
+                    f"{n} {lo:.0f}–{hi:.0f}</span>"
+                    for i, (n, lo, hi) in enumerate(bounds))
+                st.markdown(
+                    f"<div style='display:flex;flex-wrap:wrap;gap:6px;margin-top:8px'>{chips}</div>"
+                    f"<p class='rl-sub' style='margin-top:8px'>기준: {basis}</p>",
+                    unsafe_allow_html=True)
+            else:
+                st.warning("프로필에서 최대 심박(과 LTHR)을 먼저 입력하세요.")
+
+        zoned = ana.assign_zones(df_w, ZM, hist, HR_REST, HR_MAX)
+
+        if len(hist) > 1 and ZM == "%LTHR":
+            with ui.card("zlthr"):
+                ui.head("🧪 적용된 LTHR", "훈련 시점마다 그때의 LTHR로 존을 매깁니다")
+                ui.rows([(f"{d:%Y-%m-%d} 이후", f"{v:.0f} bpm")
+                         for d, v in zip(hist["Date"], hist["LTHR"])])
+
+        tbl = ana.zone_table(zoned, bounds, days_z, ZM)
+        if tbl.empty:
+            st.info("심박이 기록된 훈련이 아직 없습니다.")
+        else:
+            with ui.card("ztbl"):
+                ui.head(f"📋 존별 상세 (최근 {days_z}일)")
+                if ui.is_mobile():
+                    ui.item_list([(f"{r['존']} — {r['비중(%)']}%",
+                                   f"{r['심박(bpm)']} bpm · {r['시간']} · {r['거리(km)']}km · "
+                                   f"{r['평균 페이스']}") for _, r in tbl.iterrows()])
+                else:
+                    st.dataframe(tbl, width="stretch", hide_index=True)
+
+            zc = ui.cols(2, 1)
+            with zc[0]:
+                with ui.card("zbar"):
+                    ui.head("⏱️ 존별 시간 비중")
+                    st.altair_chart(alt.Chart(tbl).mark_bar(cornerRadius=4).encode(
+                        y=alt.Y("존:N", sort=None, title=None),
+                        x=alt.X("비중(%):Q", title="%"),
+                        color=alt.Color("존:N", sort=zone_order(ZM), legend=None,
+                                        scale=zone_scale(ZM)),
+                        tooltip=["존", "시간", "비중(%)", "거리(km)", "평균 페이스"]
+                    ).properties(height=ui.chart_height(220, 200)), width="stretch")
+                    inten_z = ana.intensity_distribution(zoned, ZM, days_z)
+                    if inten_z:
+                        p = inten_z["polarized_pct"]
+                        ui.rows([("저강도 (Z1~Z2)", f"{p['low']}%"),
+                                 ("중강도 (Z3~Z4)", f"{p['mid']}%"),
+                                 ("고강도 (Z5)", f"{p['high']}%")])
+                        st.markdown(ui.pill(inten_z["verdict"],
+                                            "ok" if p["low"] >= 78 else "warn"),
+                                    unsafe_allow_html=True)
+
+            with zc[1 % len(zc)]:
+                with ui.card("zdist"):
+                    ui.head("🏃 존별 누적 거리")
+                    st.altair_chart(alt.Chart(tbl).mark_arc(innerRadius=55, cornerRadius=3).encode(
+                        theta=alt.Theta("거리(km):Q"),
+                        color=alt.Color("존:N", sort=zone_order(ZM), title=None,
+                                        scale=zone_scale(ZM)),
+                        tooltip=["존", "거리(km)", "세션"]
+                    ).properties(height=ui.chart_height(240, 220)), width="stretch")
+
+            with ui.card("zhist"):
+                ui.head("📅 주간 존 분포 추이", "막대 하나가 한 주 · 색이 존")
+                zh = ana.zone_history(zoned, wk_z)
+                if not zh.empty:
+                    st.altair_chart(alt.Chart(zh).mark_bar(cornerRadius=2).encode(
+                        x=alt.X("주:O", title=None, axis=alt.Axis(labelAngle=-45, labelLimit=70)),
+                        y=alt.Y("분:Q", title="분", stack="normalize",
+                                axis=alt.Axis(format="%")),
+                        color=alt.Color("존:N", sort=zone_order(ZM), title=None,
+                                        scale=zone_scale(ZM)),
+                        tooltip=["주", "존", "분"]
+                    ).properties(height=ui.chart_height(280, 240)), width="stretch")
+                else:
+                    st.caption("데이터 없음")
+
+            with ui.card("ztrend"):
+                ui.head("📈 특정 존의 페이스 추이",
+                        "같은 존 심박에서 페이스가 빨라지면 기량이 올라간 것입니다")
+                zone_opts = tbl["존"].tolist()
+                pick_z = st.selectbox("존 선택", zone_opts,
+                                      index=min(1, len(zone_opts) - 1), key="ztrend_pick")
+                tr = ana.zone_pace_trend(zoned, pick_z, 365)
+                if tr.empty or len(tr) < 2:
+                    st.caption("해당 존의 기록이 부족합니다.")
+                else:
+                    pts = alt.Chart(tr).mark_circle(size=70, opacity=.5,
+                                                    color="#2563eb").encode(
+                        x=alt.X("WorkoutDate:T", title=None),
+                        y=alt.Y("페이스(분/km):Q", scale=alt.Scale(zero=False, reverse=True)),
+                        size=alt.Size("DistanceKm:Q", legend=None),
+                        tooltip=["WorkoutDate:T", "페이스(분/km):Q", "AvgHeartRate:Q"])
+                    ln = alt.Chart(tr).mark_line(color="#f97316", strokeWidth=2.5).encode(
+                        x="WorkoutDate:T", y=alt.Y("추세:Q", scale=alt.Scale(zero=False, reverse=True)))
+                    st.altair_chart((pts + ln).properties(
+                        height=ui.chart_height(280, 240)), width="stretch")
+
+        st.caption("※ 세션 평균 심박으로 존을 판정합니다. 강약이 섞인 인터벌은 실제보다 "
+                   "중간 존으로 뭉뚱그려집니다 — 존별 정확도를 높이려면 .fit 파일 연동이 필요합니다.")
+
     # ── 2-3 통계 ──────────────────────────────────────────────────────────
     with s_stat:
         df_w = db.load_data("Workouts")
@@ -756,15 +1031,20 @@ with tab_work:
             g = ui.cols(2, 1)
             with g[0]:
                 with ui.card("zone"):
-                    ui.head("🎚️ 강도 분포 (최근 90일)")
-                    if inten := ana.intensity_distribution(df_w, HR_REST, HR_MAX, LTHR):
+                    ui.head("🎚️ 강도 분포 (최근 90일)",
+                            "자세한 존 분석은 ‘🎚️ 심박존’ 탭에서")
+                    _zm = st.session_state.get("zone_model", ana.DEFAULT_ZONE_MODEL)
+                    _zd = ana.assign_zones(df_w, _zm,
+                                           ana.lthr_history(db.load_data("Metrics"), LTHR, HR_MAX),
+                                           HR_REST, HR_MAX)
+                    if inten := ana.intensity_distribution(_zd, _zm):
                         zd = pd.DataFrame({"존": list(inten["zone_pct"]),
                                            "비율": list(inten["zone_pct"].values())})
                         st.altair_chart(alt.Chart(zd).mark_bar(cornerRadius=4).encode(
                             y=alt.Y("존:N", sort=None, title=None),
                             x=alt.X("비율:Q", title="%"),
-                            color=alt.Color("존:N", legend=None, scale=alt.Scale(
-                                range=["#93c5fd", "#60a5fa", "#fbbf24", "#fb923c", "#ef4444"])),
+                            color=alt.Color("존:N", legend=None, sort=zone_order(_zm),
+                                            scale=zone_scale(_zm)),
                             tooltip=["존", "비율"]).properties(height=ui.chart_height(200, 180)),
                             width="stretch")
                         p = inten["polarized_pct"]
@@ -1001,6 +1281,18 @@ with tab_goal:
                         st.success("생성 완료")
                         st.rerun()
 
+        record_editor(
+            "Projects", "ProjectID",
+            lambda r: f"{r['ProjectName']} · {r['Status']}",
+            [("ProjectName", "text", "프로젝트명", None),
+             ("Status", "select", "상태", ["ACTIVE", "PLANNED", "COMPLETED", "PAUSED"]),
+             ("GoalValue", "text", "목표", None),
+             ("GoalType", "text", "목표 유형", None),
+             ("StartDate", "date", "시작일", None),
+             ("TargetDate", "date", "목표일", None),
+             ("Description", "area", "설명", None)],
+            key="proj")
+
     # 러닝화
     with g2:
         df_shoes = db.load_data("Shoes")
@@ -1011,9 +1303,10 @@ with tab_goal:
             with st.expander("➕ 러닝화 등록"):
                 with st.form("f_shoe", clear_on_submit=True):
                     sn = st.text_input("이름", "Nike Zoom Fly 6")
-                    sb_ = ui.cols(2, 2, keep_row=True)
-                    sbrand = sb_[0].text_input("브랜드", "Nike")
-                    scat = sb_[1].selectbox("용도", ["Daily", "Tempo", "Race", "Trail"])
+                    sbrand = st.text_input("브랜드", "Nike")
+                    scat = st.multiselect("용도 (복수 선택)", SHOE_CATEGORIES,
+                                          default=["데일리 트레이너"],
+                                          help="한 켤레가 여러 역할을 겸하면 모두 고르세요")
                     sd_ = ui.cols(2, 2, keep_row=True)
                     sinit = sd_[0].number_input("기존 누적 (km)", 0.0, 2000.0, 0.0, 1.0)
                     starg = sd_[1].number_input("목표 수명 (km)", 100.0, 2000.0, 600.0, 50.0)
@@ -1022,7 +1315,7 @@ with tab_goal:
                             "ShoeID": new_id("SHOE"), "ShoeName": sn, "Brand": sbrand,
                             "PurchaseDate": date.today().strftime("%Y-%m-%d"),
                             "InitialDistanceKm": sinit, "TargetDistanceKm": starg,
-                            "Status": "ACTIVE", "Category": scat, "Notes": ""}]))
+                            "Status": "ACTIVE", "Category": ", ".join(scat), "Notes": ""}]))
                         st.success("등록 완료")
                         st.rerun()
 
@@ -1039,16 +1332,43 @@ with tab_goal:
                         targ = fnum(s.get("TargetDistanceKm"), 600.0) or 600.0
                         pct = min(100.0, used / targ * 100)
                         tone = "bad" if pct >= 100 else ("warn" if pct >= 85 else "")
+                        cats = cat_list(s.get("Category"))
+                        badges = "".join(ui.pill(c, "info") for c in cats)
                         st.markdown(f"<div class='t' style='font-weight:700'>👟 {s['ShoeName']}</div>"
-                                    f"<div class='m'>{s.get('Brand','')} · {s.get('Category','')} · "
-                                    f"{s.get('Status','')}</div>", unsafe_allow_html=True)
+                                    f"<div class='m'>{s.get('Brand','')} · {s.get('Status','')}</div>"
+                                    f"<div style='display:flex;flex-wrap:wrap;gap:5px;margin-top:7px'>"
+                                    f"{badges}</div>", unsafe_allow_html=True)
                         ui.bar(pct, tone)
+                        used_w = d[d["ShoeID"].astype(str) == str(s["ShoeID"])] \
+                            if "ShoeID" in d.columns else pd.DataFrame()
+                        if not used_w.empty:
+                            km = float(used_w["DistanceKm"].sum())
+                            mins = float(used_w["DurationMinutes"].sum())
+                            top = used_w["WorkoutType"].mode()
+                            st.markdown(
+                                f"<div class='m'>{len(used_w)}회 · 평균 "
+                                f"{ana.pace_str(mins * 60 / km) if km > 0 else '-'} · 주 용도 "
+                                f"{top.iloc[0] if not top.empty else '-'}</div>",
+                                unsafe_allow_html=True)
                         st.markdown(f"<div class='rl-row'><span class='k'>누적</span>"
                                     f"<span class='v'>{used:.0f} / {targ:.0f} km "
                                     f"({pct:.0f}%)</span></div>", unsafe_allow_html=True)
                         if pct >= 85:
                             st.markdown(ui.pill("교체 시점 도달" if pct >= 100 else "교체 준비",
                                                 tone or "warn"), unsafe_allow_html=True)
+
+        record_editor(
+            "Shoes", "ShoeID",
+            lambda r: f"{r['ShoeName']} ({r.get('Brand','')}) · {r.get('Status','')}",
+            [("ShoeName", "text", "이름", None),
+             ("Brand", "text", "브랜드", None),
+             ("Category", "multi", "용도 (복수 선택)", SHOE_CATEGORIES),
+             ("Status", "select", "상태", ["ACTIVE", "NEW", "RETIRED"]),
+             ("InitialDistanceKm", "num", "기존 누적 (km)", None),
+             ("TargetDistanceKm", "num", "목표 수명 (km)", None),
+             ("PurchaseDate", "date", "구입일", None),
+             ("Notes", "area", "메모", None)],
+            key="shoe")
 
     # 대회
     with g3:
@@ -1116,6 +1436,19 @@ with tab_goal:
                                  ("현재 단계", plan.get("phase", "—")),
                                  ("테이퍼 시작", plan.get("taper_start", "—"))])
 
+        record_editor(
+            "Races", "RaceID",
+            lambda r: f"{r['RaceDate']} · {r['RaceName']} ({r.get('Distance','')})",
+            [("RaceName", "text", "대회명", None),
+             ("Distance", "select", "종목", list(RACE_DIST_KM)),
+             ("RaceDate", "date", "날짜", None),
+             ("GoalTime", "text", "목표 기록", None),
+             ("ActualTime", "text", "실제 기록", None),
+             ("ResultStatus", "select", "결과", ["PLANNED", "COMPLETED", "DNF", "DNS"]),
+             ("Notes", "area", "메모", None)],
+            key="race",
+            derive=lambda v: {"DistanceKm": RACE_DIST_KM.get(v.get("Distance"), "")})
+
     # 개인 기록
     with g4:
         df_w = db.load_data("Workouts")
@@ -1163,8 +1496,48 @@ with tab_admin:
                                      "CurrentWeightKg": a_w, "StartWeightKg": a_sw})
                     st.success("저장 완료")
                     st.rerun()
-            zs = ana.hr_zones(HR_REST, HR_MAX)
-            ui.rows([(n, f"{lo:.0f} – {(hi if hi < 900 else HR_MAX):.0f} bpm") for n, lo, hi in zs])
+        df_metrics_p = db.load_data("Metrics")
+        hist_p = ana.lthr_history(df_metrics_p, LTHR, HR_MAX)
+        cur_lthr = float(hist_p["LTHR"].iloc[-1]) if not hist_p.empty else ana.resolve_lthr(LTHR, HR_MAX)
+
+        with ui.card("zonetbl"):
+            ui.head("🎚️ 심박존 표", f"현재 적용 LTHR {cur_lthr:.0f} bpm · 최대 {HR_MAX:.0f} bpm")
+            zc = ui.cols(3, 1)
+            for i, m in enumerate(ana.ZONE_MODELS):
+                bounds = ana.zone_bounds(m, cur_lthr, HR_REST, HR_MAX)
+                with zc[i % len(zc)]:
+                    st.markdown(f"<p class='rl-sub' style='margin:6px 0 2px'><b>{m}</b></p>",
+                                unsafe_allow_html=True)
+                    if bounds:
+                        ui.rows([(n, f"{lo:.0f}–{hi:.0f}") for n, lo, hi in bounds])
+                    else:
+                        st.caption("값 부족")
+            st.caption("앱 전체에 적용할 기준은 ‘🏃 훈련 & 리포트 → 🎚️ 심박존’ 탭에서 고릅니다.")
+
+        with ui.card("lthrhist"):
+            ui.head("🧪 젖산역치(LTHR) 변경 이력",
+                    "값이 바뀔 때만 기록하세요 — 과거 훈련은 그 시점의 LTHR로 존이 매겨집니다")
+            if not hist_p.empty:
+                ui.rows([(f"{d:%Y-%m-%d}", f"{v:.0f} bpm")
+                         for d, v in zip(hist_p["Date"], hist_p["LTHR"])][-8:])
+            with st.form("f_lthr", clear_on_submit=True):
+                lc = ui.cols(2, 1, keep_row=True)
+                l_date = lc[0].date_input("변경일", date.today(), key="lthr_date")
+                l_val = lc[1 % len(lc)].number_input("새 LTHR (bpm)", 0, 230,
+                                                     int(cur_lthr), key="lthr_val")
+                l_pace = st.text_input("LT 페이스 (선택)", "", placeholder="4:50")
+                if st.form_submit_button("변경 기록 추가", width="stretch", type="primary"):
+                    if l_val <= 0:
+                        st.error("LTHR 값을 입력하세요.")
+                    else:
+                        db.append_rows("Metrics", pd.DataFrame([{
+                            "MetricID": new_id("MET"),
+                            "MetricDate": l_date.strftime("%Y-%m-%d"),
+                            "LTHR": l_val, "LTPace": l_pace,
+                            "Notes": "LTHR 변경"}]))
+                        db.save_athlete({"LTHR": l_val})
+                        st.success(f"LTHR {l_val} bpm 기록 완료")
+                        st.rerun()
 
     # ── 가민 일일 지표 입력 ────────────────────────────────────────────
     with a2:
@@ -1228,6 +1601,25 @@ with tab_admin:
                         x=alt.X("StatusDate:T", title=None), y=alt.Y("값:Q", title=None),
                         color=alt.Color("지표:N", title=None)).properties(
                         height=ui.chart_height()), width="stretch")
+
+        record_editor(
+            "DailyStatus", "StatusID",
+            lambda r: f"{str(r['StatusDate'])[:10]} · {r.get('TrainingStatus','') or '—'}",
+            [("StatusDate", "date", "날짜", None),
+             ("TrainingStatus", "select", "Training Status", list(ana.TRAINING_STATUS)),
+             ("AcuteLoad", "numopt", "Acute Load", None),
+             ("LoadRatio", "numopt", "Load Ratio", None),
+             ("RecoveryTimeHr", "numopt", "회복 시간 (h)", None),
+             ("TrainingReadiness", "numopt", "Readiness", None),
+             ("BodyBattery", "numopt", "Body Battery", None),
+             ("HRVms", "numopt", "HRV (ms)", None),
+             ("HRVStatus", "select", "HRV 상태",
+              ["Balanced", "Unbalanced", "Low", "Poor", "No Status"]),
+             ("SleepScore", "numopt", "수면 점수", None),
+             ("RestingHR", "numopt", "안정시 심박", None),
+             ("IntensityMinutes", "numopt", "고강도 분", None),
+             ("Notes", "area", "메모", None)],
+            key="daily")
 
     # ── 가민 주간 지표 입력 ────────────────────────────────────────────
     with a3:
@@ -1300,6 +1692,28 @@ with tab_admin:
                         else:
                             st.caption("데이터 없음")
 
+        record_editor(
+            "Metrics", "MetricID",
+            lambda r: f"{str(r['MetricDate'])[:10]} · VO₂max {r.get('VO2Max','') or '—'}",
+            [("MetricDate", "date", "측정일", None),
+             ("VO2Max", "numopt", "VO₂max", None),
+             ("FitnessAge", "numopt", "피트니스 나이", None),
+             ("EnduranceScore", "numopt", "Endurance Score", None),
+             ("HillScore", "numopt", "Hill Score", None),
+             ("FocusAnaerobic", "numopt", "Focus 무산소", None),
+             ("FocusHighAerobic", "numopt", "Focus 고강도 유산소", None),
+             ("FocusLowAerobic", "numopt", "Focus 저강도 유산소", None),
+             ("Pred5K", "text", "예측 5K", None),
+             ("Pred10K", "text", "예측 10K", None),
+             ("PredHalf", "text", "예측 Half", None),
+             ("PredFull", "text", "예측 Full", None),
+             ("LTPace", "text", "LT 페이스", None),
+             ("LTHR", "numopt", "LTHR", None),
+             ("WeightKg", "numopt", "체중 (kg)", None),
+             ("BodyFatPct", "numopt", "체지방률 (%)", None),
+             ("Notes", "area", "메모", None)],
+            key="metric")
+
     with a4:
         df_notes = db.load_data("CoachNotes")
         with ui.card("note"):
@@ -1323,6 +1737,15 @@ with tab_admin:
                                 unsafe_allow_html=True)
             else:
                 st.caption("작성된 노트가 없습니다.")
+
+        record_editor(
+            "CoachNotes", "NoteID",
+            lambda r: f"{r['NoteDate']} · {r['Category']} · {str(r['NoteText'])[:24]}",
+            [("NoteDate", "date", "날짜", None),
+             ("Category", "select", "분류",
+              ["Weekly", "Monthly", "Race", "Injury", "General"]),
+             ("NoteText", "area", "내용", None)],
+            key="note")
 
     with a5:
         with ui.card("autologin"):
