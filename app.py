@@ -21,6 +21,30 @@ import ui
 import db
 import analytics as ana
 
+# ── 파일 버전 불일치 방지 ──────────────────────────────────────────────
+# app.py 만 올리고 나머지를 빠뜨리면 AttributeError 가 납니다.
+# 원인을 바로 알 수 있도록 시작 시점에 검사합니다.
+_REQUIRED = {
+    "analytics.py": (ana, ["DEFAULT_ZONE_MODEL", "ZONE_MODELS", "assign_zones",
+                           "lthr_history", "zone_bounds", "zone_table", "zone_history",
+                           "zone_pace_trend", "latest_garmin", "garmin_alerts",
+                           "status_meta", "load_focus"]),
+    "ui.py":        (ui, ["boot", "card", "head", "pill", "rows", "bar",
+                          "item_list", "metrics", "cols", "chart_height", "divider"]),
+    "db.py":        (db, ["init_db", "load_data", "append_rows", "write_sheet",
+                          "get_athlete", "save_athlete", "export_excel_bytes",
+                          "reset_db", "backend_name"]),
+}
+_stale = [(f, [a for a in attrs if not hasattr(m, a)]) for f, (m, attrs) in _REQUIRED.items()
+          if [a for a in attrs if not hasattr(m, a)]]
+if _stale:
+    st.error("⚠️ 파일 버전이 서로 맞지 않습니다. 아래 파일을 최신 내용으로 다시 올려주세요.")
+    for f, miss in _stale:
+        st.write(f"**{f}** — 없는 항목: `{', '.join(miss)}`")
+    st.info("GitHub 저장소에 app.py · ui.py · db.py · analytics.py **네 개를 모두** "
+            "같은 버전으로 올려야 합니다. 하나만 바꾸면 이 화면이 나옵니다.")
+    st.stop()
+
 ui.boot()
 
 WORKOUT_TYPES = ["Easy", "Recovery", "LSD", "Tempo", "Threshold",
