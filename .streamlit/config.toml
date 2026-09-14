@@ -1,6 +1,8 @@
+# Streamlit 기본 테마 — base 를 지정하지 않으면 사용자의 시스템 설정(밝게/어둡게)을 따릅니다.
+# ui.py 가 실제 적용된 테마를 읽어 CSS를 맞추므로 위젯과 배경이 어긋나지 않습니다.
 [theme]
-base = "light"
-primaryColor = "#2563eb"
-backgroundColor = "#f6f7f9"
-secondaryBackgroundColor = "#ffffff"
-textColor = "#0f172a"
+primaryColor = "#3b5bdb"
+font = "sans serif"
+
+[server]
+headless = true
