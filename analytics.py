@@ -106,7 +106,8 @@ def trimp_row(duration_min: float, avg_hr: float, hr_rest: float, hr_max: float,
 
 
 def daily_load_series(df_work: pd.DataFrame, hr_rest: float, hr_max: float,
-                      sex: str = "M", end_date: datetime | None = None) -> pd.DataFrame:
+                      sex: str = "M", end_date: datetime | None = None,
+                      hist: pd.DataFrame | None = None) -> pd.DataFrame:
     """
     일 단위 TRIMP 시계열. 훈련 없는 날은 0으로 채운다 (← 기존 코드의 핵심 오류 지점).
     반환: index=날짜, columns=[TRIMP, DistanceKm, CTL, ATL, TSB, ACWR, Monotony, Strain]
@@ -122,11 +123,22 @@ def daily_load_series(df_work: pd.DataFrame, hr_rest: float, hr_max: float,
             index=idx,
         )
 
-    d["TRIMP"] = [
-        trimp_row(r.DurationMinutes, r.AvgHeartRate, hr_rest, hr_max,
-                  getattr(r, "RPE", np.nan), sex)
-        for r in d.itertuples()
-    ]
+    # 프로필 이력이 있으면 훈련 시점의 안정/최대 심박으로 TRIMP 계산
+    if hist is not None and not hist.empty:
+        d = _asof(d.sort_values("WorkoutDate").copy(), hist)
+        d["TRIMP"] = [
+            trimp_row(r.DurationMinutes, r.AvgHeartRate,
+                      _num(getattr(r, "HRRestUsed", np.nan), hr_rest) or hr_rest,
+                      _num(getattr(r, "HRMaxUsed", np.nan), hr_max) or hr_max,
+                      getattr(r, "RPE", np.nan), sex)
+            for r in d.itertuples()
+        ]
+    else:
+        d["TRIMP"] = [
+            trimp_row(r.DurationMinutes, r.AvgHeartRate, hr_rest, hr_max,
+                      getattr(r, "RPE", np.nan), sex)
+            for r in d.itertuples()
+        ]
     d["Day"] = d["WorkoutDate"].dt.normalize()
     daily = d.groupby("Day").agg(TRIMP=("TRIMP", "sum"), DistanceKm=("DistanceKm", "sum"))
 
@@ -253,70 +265,126 @@ def zone_bounds(model: str = DEFAULT_ZONE_MODEL, lthr=None,
     return [(n, hr_rest + rng * lo, hr_rest + rng * hi) for n, lo, hi in spec]
 
 
-def lthr_history(df_metrics: pd.DataFrame, current_lthr=None,
-                 hr_max=None) -> pd.DataFrame:
+PROFILE_FIELDS = ["LTHR", "HRRest", "HRMax", "WeightKg", "BodyFatPct"]
+
+
+def profile_history(df_metrics: pd.DataFrame, current: dict | None = None) -> pd.DataFrame:
     """
-    LTHR 변경 이력 → [Date, LTHR]. Metrics 시트에 기록된 값만 사용하고,
-    하나도 없으면 프로필의 현재 LTHR(또는 최대심박의 90%)을 단일 값으로 씁니다.
+    프로필 변경 이력 → [Date, LTHR, HRRest, HRMax, WeightKg, BodyFatPct].
+
+    Metrics 시트에 날짜와 함께 남긴 값들을 모아 시점별 스냅샷을 만듭니다.
+    각 항목은 마지막으로 기록된 값이 다음 기록 전까지 유지(ffill)됩니다.
+    기록이 없는 항목은 current(현재 프로필)로 채웁니다.
     """
-    rows = pd.DataFrame(columns=["Date", "LTHR"])
-    if df_metrics is not None and not df_metrics.empty and "LTHR" in df_metrics.columns:
-        m = df_metrics[["MetricDate", "LTHR"]].copy()
+    cur = dict(current or {})
+    rows = pd.DataFrame(columns=["Date"] + PROFILE_FIELDS)
+
+    if df_metrics is not None and not df_metrics.empty and "MetricDate" in df_metrics.columns:
+        m = df_metrics.copy()
         m["Date"] = pd.to_datetime(m["MetricDate"], errors="coerce")
-        m["LTHR"] = pd.to_numeric(m["LTHR"], errors="coerce")
-        m = m.dropna(subset=["Date", "LTHR"])
-        m = m[m["LTHR"] > 0].sort_values("Date")
-        if not m.empty:
-            # 같은 값이 반복되면 변경 시점만 남긴다
-            m = m.loc[m["LTHR"].ne(m["LTHR"].shift())]
-            rows = m[["Date", "LTHR"]].reset_index(drop=True)
-    if rows.empty:
-        base = resolve_lthr(current_lthr, hr_max)
-        if base <= 0:
-            return rows
-        rows = pd.DataFrame([{"Date": pd.Timestamp("2000-01-01"), "LTHR": base}])
-    return rows.sort_values("Date").reset_index(drop=True)
+        for f in PROFILE_FIELDS:
+            m[f] = pd.to_numeric(m.get(f), errors="coerce") if f in m.columns else np.nan
+            m.loc[m[f] <= 0, f] = np.nan
+        m = m.dropna(subset=["Date"]).sort_values("Date")
+        m = m[["Date"] + PROFILE_FIELDS]
+        # 같은 날 여러 행이면 마지막 값 우선
+        m = m.groupby("Date", as_index=False).last()
+        if not m[PROFILE_FIELDS].notna().any().any():
+            m = m.iloc[0:0]
+        rows = m
+
+    # 맨 앞에 '기본값' 한 줄을 깔아 첫 기록 이전 훈련도 값을 갖게 한다
+    base = {"Date": pd.Timestamp("2000-01-01")}
+    for f in PROFILE_FIELDS:
+        v = _num(cur.get(f), np.nan)
+        base[f] = v if np.isfinite(v) and v > 0 else np.nan
+    if not np.isfinite(_num(base.get("LTHR"), np.nan)):
+        base["LTHR"] = resolve_lthr(None, cur.get("HRMax"))
+
+    rows = pd.concat([pd.DataFrame([base]), rows], ignore_index=True).sort_values("Date")
+    rows[PROFILE_FIELDS] = rows[PROFILE_FIELDS].ffill().bfill()
+    return rows.reset_index(drop=True)
+
+
+def profile_changes(hist: pd.DataFrame) -> pd.DataFrame:
+    """화면에 보여줄 '실제로 바뀐 시점'만 추린 이력 (기본값 줄 제외)."""
+    if hist is None or hist.empty:
+        return pd.DataFrame()
+    h = hist[hist["Date"] > pd.Timestamp("2000-01-02")].copy()
+    if h.empty:
+        return h
+    keep = h[PROFILE_FIELDS].ne(h[PROFILE_FIELDS].shift()).any(axis=1)
+    return h[keep]
+
+
+def lthr_history(df_metrics: pd.DataFrame, current_lthr=None, hr_max=None) -> pd.DataFrame:
+    """(하위 호환) LTHR 이력만 필요한 곳에서 사용."""
+    h = profile_history(df_metrics, {"LTHR": current_lthr, "HRMax": hr_max})
+    return h[["Date", "LTHR"]]
+
+
+def _asof(df_work: pd.DataFrame, hist: pd.DataFrame) -> pd.DataFrame:
+    """훈련 날짜에 그 시점의 프로필 값을 붙인다."""
+    if hist is None or hist.empty:
+        for f in PROFILE_FIELDS:
+            df_work[f + "Used"] = np.nan
+        return df_work
+    h = hist.rename(columns={f: f + "Used" for f in PROFILE_FIELDS}).sort_values("Date")
+    out = pd.merge_asof(df_work.sort_values("WorkoutDate"), h,
+                        left_on="WorkoutDate", right_on="Date", direction="backward")
+    for f in PROFILE_FIELDS:
+        col = f + "Used"
+        if col in out.columns:
+            out[col] = out[col].fillna(float(h[col].iloc[0]) if pd.notna(h[col].iloc[0]) else np.nan)
+    return out.drop(columns=["Date"], errors="ignore")
 
 
 def assign_zones(df_work: pd.DataFrame, model: str = DEFAULT_ZONE_MODEL,
-                 lthr_hist: pd.DataFrame | None = None,
+                 hist: pd.DataFrame | None = None,
                  hr_rest=None, hr_max=None) -> pd.DataFrame:
     """
-    각 훈련에 '그 시점 기준'의 존을 붙입니다.
-    반환 컬럼 추가: LTHRUsed(적용된 LTHR), 존
-    %HRmax·%HRR은 프로필의 최대/안정 심박(고정값)을 사용합니다.
+    각 훈련에 '그 시점 프로필' 기준의 존을 붙입니다.
+    세 기준(%LTHR / %HRmax / %HRR) 모두 그 시점의 LTHR·최대·안정시 심박을 씁니다.
+    추가 컬럼: LTHRUsed, HRRestUsed, HRMaxUsed, 존
     """
     d = prepare_workouts(df_work)
     if d.empty:
-        return d.assign(LTHRUsed=np.nan, 존=pd.Series(dtype=str))
-    d = d.sort_values("WorkoutDate").copy()
+        return d.assign(LTHRUsed=np.nan, HRRestUsed=np.nan, HRMaxUsed=np.nan,
+                        존=pd.Series(dtype=str))
+    if hist is None or hist.empty:
+        hist = profile_history(None, {"LTHR": None, "HRRest": hr_rest, "HRMax": hr_max})
+    d = _asof(d.sort_values("WorkoutDate").copy(), hist)
 
-    if model == "%LTHR":
-        hist = lthr_hist if lthr_hist is not None else pd.DataFrame()
-        if hist.empty:
-            d["LTHRUsed"] = np.nan
-        else:
-            d = pd.merge_asof(d, hist.rename(columns={"Date": "_d"}).sort_values("_d"),
-                              left_on="WorkoutDate", right_on="_d", direction="backward")
-            d = d.rename(columns={"LTHR": "LTHRUsed"}).drop(columns=["_d"], errors="ignore")
-            # 첫 기록 이전의 훈련은 가장 이른 LTHR로 보정
-            d["LTHRUsed"] = d["LTHRUsed"].fillna(float(hist["LTHR"].iloc[0]))
-        spec = ZONE_MODELS["%LTHR"]
+    spec = ZONE_MODELS.get(model, ZONE_MODELS[DEFAULT_ZONE_MODEL])
 
-        def _z(hr, base):
-            if not (base and base > 0) or not np.isfinite(_num(hr, np.nan)) or hr <= 0:
+    def _zone(hr, lthr_u, rest_u, max_u):
+        hr = _num(hr, 0.0)
+        if hr <= 0:
+            return BELOW_Z1
+        if model == "%LTHR":
+            base = _num(lthr_u, 0.0) or resolve_lthr(None, max_u)
+            if base <= 0:
                 return BELOW_Z1
+            pcts = [(n, lo, hi) for n, lo, hi in spec]
             p = hr / base
-            for n, lo, hi in spec:
-                if lo <= p < hi:
-                    return n
-            return spec[-1][0] if p >= spec[-1][2] else BELOW_Z1
+        elif model == "%HRmax":
+            mx = _num(max_u, 0.0)
+            if mx <= 0:
+                return BELOW_Z1
+            pcts, p = spec, hr / mx
+        else:                                   # %HRR
+            mx, rs = _num(max_u, 0.0), _num(rest_u, 0.0)
+            if mx <= rs or mx <= 0:
+                return BELOW_Z1
+            pcts, p = spec, (hr - rs) / (mx - rs)
+        for n, lo, hi in pcts:
+            if lo <= p < hi:
+                return n
+        return spec[-1][0] if p >= spec[-1][2] else BELOW_Z1
 
-        d["존"] = [_z(hr, b) for hr, b in zip(d["AvgHeartRate"], d["LTHRUsed"])]
-    else:
-        bounds = zone_bounds(model, None, hr_rest, hr_max)
-        d["LTHRUsed"] = np.nan
-        d["존"] = [zone_of(hr, bounds) for hr in d["AvgHeartRate"]]
+    d["존"] = [_zone(hr, l, r, m) for hr, l, r, m in
+               zip(d["AvgHeartRate"], d.get("LTHRUsed", np.nan),
+                   d.get("HRRestUsed", np.nan), d.get("HRMaxUsed", np.nan))]
     return d
 
 
