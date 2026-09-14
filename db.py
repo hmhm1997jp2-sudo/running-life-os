@@ -155,14 +155,50 @@ def init_db() -> None:
         return
     if use_gsheets():
         sh = _spreadsheet()
-        existing = {ws.title for ws in _retry(sh.worksheets)}
+        ws_by_name = {ws.title: ws for ws in _retry(sh.worksheets)}
+        existing = set(ws_by_name)
+
+        # 없는 시트 생성
+        created = []
         for name, cols in SCHEMA.items():
             if name not in existing:
-                ws = sh.add_worksheet(title=name, rows=200, cols=max(12, len(cols)))
-                ws.update(range_name="A1", values=[cols])
+                ws = _retry(sh.add_worksheet, title=name, rows=200,
+                            cols=max(12, len(cols) + 4))
+                _retry(ws.update, range_name="A1", values=[cols])
                 if name == "Athlete":
-                    ws.append_row([str(DEFAULT_ATHLETE.get(c, "")) for c in cols],
-                                  value_input_option="USER_ENTERED")
+                    _retry(ws.append_row,
+                           [str(DEFAULT_ATHLETE.get(c, "")) for c in cols],
+                           value_input_option="USER_ENTERED")
+                created.append(name)
+
+        # 기존 시트의 헤더가 스키마보다 좁으면 넓힌다
+        # (컬럼을 추가한 뒤 새 행만 넓게 들어가면 읽을 때 폭이 어긋납니다)
+        # 시트 열 수가 스키마보다 적으면 먼저 넓힌다 (헤더를 쓸 자리 확보)
+        for name, cols in SCHEMA.items():
+            ws = ws_by_name.get(name)
+            if ws is None:
+                continue
+            try:
+                if int(getattr(ws, "col_count", 0) or 0) < len(cols):
+                    _retry(ws.resize, cols=len(cols) + 4)
+            except Exception:
+                pass
+
+        old = [n for n in SCHEMA if n in existing and n not in created]
+        if old:
+            try:
+                resp = _retry(sh.values_batch_get, [f"'{n}'!1:1" for n in old])
+                fixes = []
+                for name, vr in zip(old, resp.get("valueRanges", [])):
+                    cur = [str(h) for h in (vr.get("values", [[]]) or [[]])[0]]
+                    want = SCHEMA[name]
+                    if cur[:len(want)] != want:
+                        fixes.append({"range": f"'{name}'!A1", "values": [want]})
+                if fixes:
+                    _retry(sh.values_batch_update,
+                           {"valueInputOption": "RAW", "data": fixes})
+            except Exception:
+                pass   # 헤더 보정 실패해도 읽기 쪽에서 폭을 맞춰 처리합니다
     else:
         if not os.path.exists(EXCEL_FILE):
             with pd.ExcelWriter(EXCEL_FILE, engine="openpyxl") as w:
@@ -227,9 +263,15 @@ def _read_all(version: int = 0) -> dict[str, pd.DataFrame]:
             if not values:
                 out[name] = pd.DataFrame(columns=SCHEMA[name])
                 continue
-            header = values[0]
-            width = len(header)
-            rows = [r + [""] * (width - len(r)) for r in values[1:]]
+            header = [str(h) for h in values[0]]
+            body = values[1:]
+            # 헤더보다 넓은 데이터 행이 있으면(스키마 확장 직후) 헤더를 늘려 맞춘다
+            width = max([len(header)] + [len(r) for r in body]) if body else len(header)
+            schema_cols = SCHEMA.get(name, [])
+            while len(header) < width:
+                i = len(header)
+                header.append(schema_cols[i] if i < len(schema_cols) else f"_extra{i}")
+            rows = [list(r) + [""] * (width - len(r)) for r in body]
             df = pd.DataFrame(rows, columns=header).replace("", np.nan)
             out[name] = df.dropna(how="all")
     else:
