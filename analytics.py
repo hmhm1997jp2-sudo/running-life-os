@@ -1022,3 +1022,203 @@ def garmin_alerts(g: dict) -> list[dict]:
     if fo and not fo.get("balanced"):
         out.append({"level": "info", "msg": f"가민 Load Focus — {fo['verdict']}"})
     return out
+
+
+# ---------------------------------------------------------------------------
+# 9. 랩(구간) 기반 분석
+#    세션 '평균' 심박 하나로 존을 매기면 인터벌이 중간 존으로 뭉개집니다.
+#    랩이 있는 훈련은 랩 단위로 존을 매겨 정확도를 크게 올립니다.
+# ---------------------------------------------------------------------------
+
+def laps_with_context(df_laps: pd.DataFrame, df_work: pd.DataFrame) -> pd.DataFrame:
+    """랩에 훈련 날짜/유형을 붙인다 (Laps 시트에 이미 있으면 그대로 사용)."""
+    if df_laps is None or df_laps.empty:
+        return pd.DataFrame()
+    L = df_laps.copy()
+    need = ("WorkoutDate" not in L.columns) or \
+           (pd.to_datetime(L.get("WorkoutDate"), errors="coerce").isna().all())
+    if need and df_work is not None and not df_work.empty:
+        w = df_work[["WorkoutID", "WorkoutDate", "WorkoutType"]].copy()
+        L = L.drop(columns=[c for c in ("WorkoutDate", "WorkoutType") if c in L.columns],
+                   errors="ignore")
+        L = L.merge(w, on="WorkoutID", how="left")
+    L["WorkoutDate"] = pd.to_datetime(L.get("WorkoutDate"), errors="coerce")
+    for c in ("DistanceKm", "DurationMinutes", "AvgHeartRate", "PaceSec"):
+        L[c] = pd.to_numeric(L.get(c), errors="coerce")
+    if "WorkoutType" not in L.columns:
+        L["WorkoutType"] = "Easy"
+    return L.dropna(subset=["WorkoutDate"])
+
+
+def zone_segments(df_work: pd.DataFrame, df_laps: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """
+    존 계산에 쓸 '구간' 목록을 만든다.
+      · 랩이 있는 훈련 → 랩 하나하나를 구간으로
+      · 랩이 없는 훈련 → 훈련 전체를 하나의 구간으로
+    반환: (구간 DataFrame, 통계 dict)
+    """
+    W = prepare_workouts(df_work)
+    L = laps_with_context(df_laps, df_work)
+    if W.empty:
+        return W, {"lap_workouts": 0, "total_workouts": 0, "lap_segments": 0}
+
+    lap_ids = set(L["WorkoutID"].astype(str)) if not L.empty else set()
+    plain = W[~W["WorkoutID"].astype(str).isin(lap_ids)] if "WorkoutID" in W.columns else W
+
+    parts = [plain[["WorkoutDate", "WorkoutType", "DistanceKm",
+                    "DurationMinutes", "AvgHeartRate", "PaceSec"]]]
+    if not L.empty:
+        parts.append(L[["WorkoutDate", "WorkoutType", "DistanceKm",
+                        "DurationMinutes", "AvgHeartRate", "PaceSec"]])
+    seg = pd.concat(parts, ignore_index=True).sort_values("WorkoutDate")
+    stats = {"lap_workouts": len(lap_ids),
+             "total_workouts": int(W["WorkoutID"].nunique()) if "WorkoutID" in W.columns else len(W),
+             "lap_segments": int(len(L))}
+    return seg.reset_index(drop=True), stats
+
+
+def decoupling(lap_rows: pd.DataFrame) -> float:
+    """
+    심박 디커플링 (Pa:HR) — 전반/후반의 '속도÷심박' 비교.
+    양수가 클수록 후반에 같은 페이스를 더 높은 심박으로 버틴 것 = 지구력 부족.
+    일반적으로 5% 미만이면 양호.
+    """
+    if lap_rows is None or lap_rows.empty or len(lap_rows) < 4:
+        return np.nan
+    d = lap_rows.copy()
+    for c in ("DistanceKm", "DurationMinutes", "AvgHeartRate"):
+        d[c] = pd.to_numeric(d.get(c), errors="coerce")
+    d = d[(d["DistanceKm"] > 0) & (d["DurationMinutes"] > 0) & (d["AvgHeartRate"] > 0)]
+    if len(d) < 4:
+        return np.nan
+    d = d.sort_values("LapNo") if "LapNo" in d.columns else d
+    half = len(d) // 2
+    def ef(part):
+        spd = part["DistanceKm"].sum() * 1000.0 / part["DurationMinutes"].sum()
+        hr = (part["AvgHeartRate"] * part["DurationMinutes"]).sum() / part["DurationMinutes"].sum()
+        return spd / hr if hr > 0 else np.nan
+    e1, e2 = ef(d.iloc[:half]), ef(d.iloc[half:])
+    if not (np.isfinite(e1) and np.isfinite(e2)) or e1 <= 0:
+        return np.nan
+    return float((e1 - e2) / e1 * 100.0)
+
+
+def decoupling_verdict(pct: float) -> tuple[str, str]:
+    if not np.isfinite(pct):
+        return "info", "랩이 4개 이상이어야 계산됩니다"
+    if pct < 0:
+        return "ok", "후반에 오히려 효율이 좋아짐 (네거티브 스플릿)"
+    if pct < 5:
+        return "ok", "양호 — 지구력이 페이스를 버팀"
+    if pct < 10:
+        return "warn", "보통 — 후반에 심박이 올라감"
+    return "bad", "큼 — 지구력 부족 또는 과한 초반 페이스"
+
+
+# ---------------------------------------------------------------------------
+# 10. 랩 역할 분류 — 워밍업 / 반복(본 구간) / 회복 / 쿨다운
+#     인터벌·템포런은 세션 평균이 무의미합니다. 본 구간만 따로 봐야 합니다.
+# ---------------------------------------------------------------------------
+
+LAP_ROLES = ["워밍업", "반복", "회복", "쿨다운", "지속주", "자투리"]
+
+
+def classify_laps(lap_rows: pd.DataFrame, fast_ratio: float = 1.06) -> pd.DataFrame:
+    """
+    랩을 역할별로 나눕니다.
+      · 세션 중간값보다 fast_ratio 이상 빠르고 충분히 긴 랩 → 반복(본 구간)
+      · 앞쪽의 느린 연속 구간 → 워밍업 / 뒤쪽 → 쿨다운 / 반복 사이 → 회복
+      · 속도 편차가 작거나 빠른 랩이 없으면 → 전부 지속주
+      · 아주 짧은 자투리 랩(오토랩 찌꺼기)은 '자투리'로 빼고 판단에서 제외
+    반환: 입력 + '역할' 컬럼
+    """
+    if lap_rows is None or lap_rows.empty:
+        return pd.DataFrame()
+    d = lap_rows.copy()
+    for c in ("DistanceKm", "DurationMinutes", "AvgHeartRate", "LapNo"):
+        d[c] = pd.to_numeric(d.get(c), errors="coerce")
+    d = d[(d["DistanceKm"] > 0) & (d["DurationMinutes"] > 0)]
+    if d.empty:
+        return d.assign(역할=pd.Series(dtype=str))
+    d = (d.sort_values("LapNo") if d["LapNo"].notna().any() else d).reset_index(drop=True)
+
+    # 자투리 랩 제외 (거리 50m 미만 또는 30초 미만)
+    trivial = (d["DistanceKm"] < 0.05) | (d["DurationMinutes"] < 0.5)
+    core = d[~trivial]
+    d["역할"] = ""
+    d.loc[trivial, "역할"] = "자투리"
+    if core.empty:
+        d.loc[d["역할"] == "", "역할"] = "지속주"
+        return d
+
+    spd = core["DistanceKm"] * 1000.0 / core["DurationMinutes"]      # m/min
+    med = float(spd.median())
+    cv = float(spd.std() / spd.mean()) if len(spd) > 1 and spd.mean() > 0 else 0.0
+
+    fast_mask = (spd >= med * fast_ratio) & (core["DurationMinutes"] >= 0.75)
+    fast_min = float(core.loc[fast_mask, "DurationMinutes"].sum())
+    total_min = float(core["DurationMinutes"].sum())
+
+    # 균일한 러닝(속도 편차 4% 미만) 이거나, 빠른 구간이 전체의 5% 미만이면 지속주
+    if cv < 0.04 or fast_mask.sum() == 0 or (total_min > 0 and fast_min / total_min < 0.05):
+        d.loc[d["역할"] == "", "역할"] = "지속주"
+        return d
+
+    idx = list(core.index)
+    flags = fast_mask.tolist()
+    roles = {i: "회복" for i in idx}
+    for i, f in zip(idx, flags):
+        if f:
+            roles[i] = "반복"
+    first_fast = flags.index(True)
+    last_fast = len(flags) - 1 - flags[::-1].index(True)
+    for i in idx[:first_fast]:
+        roles[i] = "워밍업"
+    for i in idx[last_fast + 1:]:
+        roles[i] = "쿨다운"
+    for i, r in roles.items():
+        d.loc[i, "역할"] = r
+    return d
+
+
+def lap_role_summary(classified: pd.DataFrame) -> pd.DataFrame:
+    """역할별 합계 — 본 구간만의 페이스·심박이 실제로 의미 있는 수치입니다."""
+    if classified is None or classified.empty or "역할" not in classified.columns:
+        return pd.DataFrame()
+    rows = []
+    for role in LAP_ROLES:
+        sub = classified[classified["역할"] == role]
+        if sub.empty:
+            continue
+        dist = float(sub["DistanceKm"].sum())
+        mins = float(sub["DurationMinutes"].sum())
+        hr = sub[sub["AvgHeartRate"] > 0]
+        hr_w = (float((hr["AvgHeartRate"] * hr["DurationMinutes"]).sum()
+                      / hr["DurationMinutes"].sum()) if not hr.empty else np.nan)
+        rows.append({
+            "역할": role, "랩": int(len(sub)),
+            "거리(km)": round(dist, 2),
+            "시간": time_str(mins * 60),
+            "평균 페이스": pace_str(mins * 60 / dist) if dist > 0 else "-",
+            "평균 심박": int(round(hr_w)) if np.isfinite(hr_w) else "-",
+        })
+    return pd.DataFrame(rows)
+
+
+def interval_shape(classified: pd.DataFrame) -> str:
+    """'5 × 1.00km @ 4:12/km (회복 4랩)' 형태의 한 줄 요약."""
+    if classified is None or classified.empty or "역할" not in classified.columns:
+        return ""
+    rep = classified[classified["역할"] == "반복"]
+    if rep.empty:
+        tot_d = float(classified["DistanceKm"].sum())
+        tot_m = float(classified["DurationMinutes"].sum())
+        return (f"지속주 {tot_d:.2f}km @ {pace_str(tot_m * 60 / tot_d)}"
+                if tot_d > 0 else "")
+    d_mean = float(rep["DistanceKm"].mean())
+    mins = float(rep["DurationMinutes"].sum())
+    dist = float(rep["DistanceKm"].sum())
+    rec = int((classified["역할"] == "회복").sum())
+    unit = f"{d_mean:.2f}km" if d_mean >= 0.2 else f"{d_mean*1000:.0f}m"
+    tail = f" · 회복 {rec}랩" if rec else ""
+    return f"{len(rep)} × {unit} @ {pace_str(mins * 60 / dist)}{tail}"
