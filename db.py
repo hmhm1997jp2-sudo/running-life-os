@@ -86,6 +86,176 @@ NUMERIC_COLS = {
     "CumMinutes",
 }
 
+# ---------------------------------------------------------------------------
+# 과거 스키마 (컬럼 순서 이력)
+#   시트의 값은 '위치'로 저장되므로, 스키마 중간에 컬럼을 끼워 넣으면
+#   그 전에 저장된 행이 밀립니다. 행의 칸 수로 어느 시절 행인지 판별해
+#   이름 기준으로 다시 맞추기 위한 표입니다.
+#   ※ 앞으로 새 컬럼은 반드시 스키마 '맨 뒤'에 추가할 것.
+# ---------------------------------------------------------------------------
+LEGACY_SCHEMAS: dict[str, dict[int, list[str]]] = {
+    "Workouts": {
+        20: ["WorkoutID", "ProjectID", "WorkoutDate", "WorkoutType", "DistanceKm",
+             "DurationMinutes", "PaceSec", "AvgHeartRate", "MaxHeartRate", "AvgPower",
+             "AvgCadence", "ElevationGainM", "Temperature", "Surface", "ShoeID",
+             "RPE", "LegFatigue", "CardioFatigue", "Notes", "SourceKey"],
+        23: ["WorkoutID", "ProjectID", "WorkoutDate", "WorkoutType", "DistanceKm",
+             "DurationMinutes", "PaceSec", "AvgHeartRate", "MaxHeartRate", "AvgPower",
+             "AvgCadence", "ElevationGainM", "Temperature", "Surface", "ShoeID",
+             "AerobicTE", "AnaerobicTE", "PrimaryBenefit",
+             "RPE", "LegFatigue", "CardioFatigue", "Notes", "SourceKey"],
+    },
+    "Metrics": {
+        9:  ["MetricID", "MetricDate", "WeightKg", "BodyFatPct", "VO2Max",
+             "LTPace", "LTHR", "LTPower", "Notes"],
+        19: ["MetricID", "MetricDate", "VO2Max", "FitnessAge",
+             "EnduranceScore", "HillScore",
+             "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
+             "Pred5K", "Pred10K", "PredHalf", "PredFull",
+             "LTPace", "LTHR", "LTPower", "WeightKg", "BodyFatPct", "Notes"],
+    },
+    "DailyStatus": {
+        8:  ["StatusID", "StatusDate", "TrainingReadiness", "BodyBattery",
+             "HRVStatus", "SleepScore", "RestingHR", "Notes"],
+    },
+    "Laps": {
+        11: ["LapID", "WorkoutID", "LapNo", "DistanceKm", "DurationMinutes",
+             "PaceSec", "AvgHeartRate", "MaxHeartRate", "AvgPower",
+             "ElevGainM", "ElevLossM"],
+        18: ["LapID", "WorkoutID", "LapNo", "DistanceKm", "DurationMinutes",
+             "PaceSec", "AvgHeartRate", "MaxHeartRate", "AvgPower", "AvgCadence",
+             "ElevGainM", "ElevLossM", "AvgGCTms", "AvgStrideM",
+             "AvgVertOscCm", "AvgVertRatioPct", "Calories", "TempC"],
+    },
+}
+
+
+def _raw_values(sheet: str) -> list[list[str]]:
+    """시트 원본 값(헤더 포함)을 그대로 읽는다 — 진단·복구용."""
+    if use_gsheets():
+        ws = _retry(_spreadsheet().worksheet, sheet)
+        return _retry(ws.get_all_values) or []
+    if not os.path.exists(EXCEL_FILE):
+        return []
+    df = pd.read_excel(EXCEL_FILE, sheet_name=sheet).fillna("")
+    return [list(df.columns)] + df.astype(str).values.tolist()
+
+
+def _suspect_shift(sheet: str, rows: list[list[str]]) -> dict[int, int]:
+    """
+    '값이 밀린 것으로 보이는' 행 수를 과거 스키마 길이별로 센다.
+    폭이 이미 현재 스키마로 맞춰진 뒤에도 내용으로 판별할 수 있게 한다.
+    """
+    import re as _re
+    _PACE = _re.compile("[0-9]{1,2}:[0-9]{2}$")      # 4:58 같은 페이스 (백슬래시 없이)
+    cur = SCHEMA.get(sheet, [])
+    out: dict[int, int] = {}
+
+    def val(r, name, names):
+        try:
+            i = names.index(name)
+        except ValueError:
+            return ""
+        return str(r[i]).strip() if i < len(r) else ""
+
+    def looks_pace(t: str) -> bool:
+        if not _PACE.match(t):
+            return False
+        try:
+            return int(t.split(":")[0]) < 20      # 하프 예측이라면 1시간 이상이어야 함
+        except ValueError:
+            return False
+
+    def looks_number(t: str) -> bool:
+        try:
+            return 0 < float(t) < 1000            # 풀 예측 자리에 숫자만 = LTHR
+        except ValueError:
+            return False
+
+    for ln, old in LEGACY_SCHEMAS.get(sheet, {}).items():
+        cnt = 0
+        for r in rows:
+            if len(r) == ln and ln != len(cur):
+                cnt += 1
+                continue
+            if sheet == "Metrics" and ln == 19:
+                ph, pf = val(r, "PredHalf", cur), val(r, "PredFull", cur)
+                lp = val(r, "LTPace", cur)
+                if (looks_pace(ph) or looks_number(pf)) and not lp:
+                    cnt += 1
+            elif sheet == "Workouts" and ln == 23:
+                cal, rpe = val(r, "Calories", cur), val(r, "RPE", cur)
+                if cal.isdigit() and 1 <= int(cal) <= 10 and not rpe:
+                    cnt += 1
+        if cnt:
+            out[ln] = cnt
+    return out
+
+
+def diagnose(sheet: str) -> dict:
+    """시트에 값이 밀린 행이 있는지 확인한다."""
+    vals = _raw_values(sheet)
+    cur = SCHEMA.get(sheet, [])
+    if not vals:
+        return {"sheet": sheet, "rows": 0, "suspects": {}, "ok": True, "header_ok": True}
+    header = [str(h) for h in vals[0]]
+    body = [r for r in vals[1:] if any(str(c).strip() for c in r)]
+    susp = _suspect_shift(sheet, body)
+    return {"sheet": sheet, "rows": len(body), "suspects": susp,
+            "header_ok": header[:len(cur)] == cur,
+            "misaligned": sum(susp.values()),
+            "ok": not susp and header[:len(cur)] == cur}
+
+
+def _remap_rows(sheet: str, legacy_len: int) -> pd.DataFrame:
+    """과거 스키마(legacy_len 열) 기준으로 이름을 다시 붙여 현재 스키마로 정렬."""
+    vals = _raw_values(sheet)
+    cur = SCHEMA.get(sheet, [])
+    old = LEGACY_SCHEMAS.get(sheet, {}).get(legacy_len, [])
+    if not vals or not cur or not old:
+        return pd.DataFrame(columns=cur)
+    recs = []
+    for r in vals[1:]:
+        if not any(str(c).strip() for c in r):
+            continue
+        recs.append({n: (r[i] if i < len(r) else "") for i, n in enumerate(old)})
+    df = pd.DataFrame(recs)
+    for c in cur:
+        if c not in df.columns:
+            df[c] = ""
+    return df[cur]
+
+
+def repair_preview(sheet: str, legacy_len: int, n: int = 3) -> tuple:
+    """교정 전/후 비교. 값이 실제로 바뀌는 컬럼만 골라 보여준다."""
+    vals = _raw_values(sheet)
+    cur = SCHEMA.get(sheet, [])
+    if not vals:
+        return pd.DataFrame(), pd.DataFrame()
+    body = [r for r in vals[1:] if any(str(c).strip() for c in r)]
+    before = pd.DataFrame(
+        [{c: (r[i] if i < len(r) else "") for i, c in enumerate(cur)} for r in body])
+    after = _remap_rows(sheet, legacy_len)
+    n = min(n, len(before), len(after)) or 1
+    b, a = before.head(n), after.head(n)
+    diff = [c for c in cur
+            if c in b.columns and c in a.columns
+            and not b[c].astype(str).equals(a[c].astype(str))]
+    key = [c for c in cur[:2]]
+    keep = key + [c for c in diff if c not in key]
+    keep = keep[:10] or cur[:8]
+    return b[[c for c in keep if c in b.columns]], a[[c for c in keep if c in a.columns]]
+
+
+def repair(sheet: str, legacy_len: int) -> dict:
+    """값은 그대로 두고 '어느 컬럼인지'만 바로잡아 시트를 다시 씁니다."""
+    df = _remap_rows(sheet, legacy_len)
+    if df.empty:
+        return {"rows": 0}
+    write_sheet(sheet, df)
+    return {"rows": len(df)}
+
+
 DEFAULT_ATHLETE = {
     "AthleteID": "ATH-001", "Name": "Runner", "BirthDate": "", "Sex": "M",
     "HeightCm": 180, "CurrentWeightKg": 85.0, "StartWeightKg": 115.0,
