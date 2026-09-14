@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 # ---------------------------------------------------------------------------
 # 0. 공통 유틸
@@ -935,16 +935,133 @@ def load_focus(g: dict) -> dict:
             "pct": pct, "verdict": verdict, "balanced": not msgs}
 
 
-def endurance_tier(score) -> str:
-    """가민 Endurance Score 등급 (대략적인 구간)."""
+# ── Endurance Score / Hill Score 등급 ────────────────────────────────────
+# 출처: Garmin Forerunner 965 사용설명서 "Endurance Score Ratings" (Firstbeat Analytics)
+# 아래 숫자는 각 등급의 '시작값'(하한)입니다. 성별·나이대에 따라 기준이 다릅니다.
+ENDURANCE_TIERS = ["Recreational", "Intermediate", "Trained", "Well Trained",
+                   "Expert", "Superior", "Elite"]
+ENDURANCE_TIERS_KR = {
+    "Recreational": "레크리에이션", "Intermediate": "중급", "Trained": "훈련됨",
+    "Well Trained": "잘 훈련됨", "Expert": "엑스퍼트", "Superior": "수준급",
+    "Elite": "엘리트"}
+
+# (나이 하한, [Intermediate, Trained, Well Trained, Expert, Superior, Elite 시작값])
+_ENDURANCE_CUTS = {
+    "M": [(18, [5000, 5700, 6300, 7000, 7600, 8300]),
+          (21, [5100, 5800, 6600, 7300, 8100, 8800]),
+          (40, [5100, 5800, 6500, 7200, 7900, 8600]),
+          (45, [5000, 5700, 6400, 7000, 7700, 8400]),
+          (50, [4900, 5500, 6100, 6800, 7400, 8000]),
+          (55, [4600, 5100, 5700, 6200, 6800, 7300]),
+          (60, [4300, 4800, 5300, 5700, 6200, 6700]),
+          (65, [4100, 4500, 4900, 5400, 5800, 6200]),
+          (70, [3800, 4200, 4600, 4900, 5300, 5700]),
+          (75, [3600, 3900, 4300, 4600, 5000, 5300]),
+          (80, [3300, 3600, 4000, 4300, 4700, 5000])],
+    "F": [(18, [4600, 5100, 5500, 6000, 6400, 6900]),
+          (21, [4700, 5200, 5700, 6300, 6800, 7300]),
+          (40, [4700, 5200, 5700, 6200, 6700, 7200]),
+          (45, [4600, 5100, 5600, 6100, 6600, 7100]),
+          (50, [4500, 5000, 5400, 5900, 6300, 6800]),
+          (55, [4300, 4700, 5100, 5600, 6000, 6400]),
+          (60, [4100, 4500, 4900, 5300, 5700, 6100]),
+          (65, [3800, 4200, 4600, 4900, 5300, 5700]),
+          (70, [3700, 4100, 4400, 4800, 5100, 5500]),
+          (75, [3500, 3800, 4200, 4500, 4900, 5200]),
+          (80, [3200, 3500, 3800, 4100, 4400, 4700])]}
+
+_ENDURANCE_BRACKET_LABEL = {18: "18–20", 21: "21–39", 40: "40–44", 45: "45–49",
+                            50: "50–54", 55: "55–59", 60: "60–64", 65: "65–69",
+                            70: "70–74", 75: "75–80", 80: "80+"}
+
+# Hill Score는 나이·성별 구분 없이 1~100 고정 구간입니다.
+HILL_TIERS = [(1, "Recreational", "레크리에이션"), (25, "Challenger", "챌린저"),
+              (50, "Trained", "훈련됨"), (70, "Skilled", "숙련"),
+              (85, "Expert", "엑스퍼트"), (95, "Elite", "엘리트")]
+
+_TIER_TONE = ["", "", "ok", "ok", "good", "good", "good"]
+
+
+def _endurance_bracket(sex: str, age) -> tuple[int, list[int]]:
+    tbl = _ENDURANCE_CUTS.get(str(sex or "M").upper()[:1], _ENDURANCE_CUTS["M"])
+    a = _num(age, np.nan)
+    if not np.isfinite(a):
+        a = 39.0                      # 나이 미입력이면 21~39 기준으로 봅니다
+    lo, cuts = tbl[0]
+    for age_lo, c in tbl:
+        if a >= age_lo:
+            lo, cuts = age_lo, c
+    return lo, cuts
+
+
+def endurance_meta(score, age=None, sex: str = "M") -> dict:
+    """Endurance Score 등급 + 해당 성별·나이대의 전체 구간표."""
+    lo, cuts = _endurance_bracket(sex, age)
+    bands = []                        # [(등급, 한글, 시작값, 끝값 or None)]
+    for i, name in enumerate(ENDURANCE_TIERS):
+        start = None if i == 0 else cuts[i - 1]
+        end = cuts[i] - 1 if i < len(cuts) else None
+        bands.append((name, ENDURANCE_TIERS_KR[name], start, end))
     s = _num(score, np.nan)
-    if not np.isfinite(s):
-        return "—"
-    for lim, name in [(1400, "Novice"), (2800, "Intermediate"), (4200, "Trained"),
-                      (5600, "Well Trained"), (7000, "Expert"), (8400, "Superior")]:
-        if s < lim:
-            return name
-    return "Elite"
+    idx = None
+    if np.isfinite(s) and s > 0:
+        idx = 0
+        for i, c in enumerate(cuts):
+            if s >= c:
+                idx = i + 1
+    nxt = ""
+    if idx is not None and idx < len(cuts):
+        nxt = (f"다음 등급({ENDURANCE_TIERS_KR[ENDURANCE_TIERS[idx + 1]]})까지 "
+               f"{cuts[idx] - s:,.0f}점")
+    return {"tier": ENDURANCE_TIERS[idx] if idx is not None else "—",
+            "kr": ENDURANCE_TIERS_KR[ENDURANCE_TIERS[idx]] if idx is not None else "—",
+            "tone": _TIER_TONE[idx] if idx is not None else "",
+            "index": idx, "bands": bands, "next_text": nxt,
+            "bracket": f"{'남성' if str(sex or 'M').upper().startswith('M') else '여성'} "
+                       f"{_ENDURANCE_BRACKET_LABEL.get(lo, '')}세 기준"}
+
+
+def hill_meta(score) -> dict:
+    """Hill Score 등급 + 전체 구간표 (나이·성별 무관)."""
+    bands = []
+    for i, (start, name, kr) in enumerate(HILL_TIERS):
+        end = HILL_TIERS[i + 1][0] - 1 if i + 1 < len(HILL_TIERS) else 100
+        bands.append((name, kr, start, end))
+    s = _num(score, np.nan)
+    idx = None
+    if np.isfinite(s) and s > 0:
+        idx = 0
+        for i, (start, _n, _k) in enumerate(HILL_TIERS):
+            if s >= start:
+                idx = i
+    nxt = ""
+    if idx is not None and idx + 1 < len(HILL_TIERS):
+        nxt = f"다음 등급({HILL_TIERS[idx + 1][2]})까지 {HILL_TIERS[idx + 1][0] - s:.0f}점"
+    return {"tier": HILL_TIERS[idx][1] if idx is not None else "—",
+            "kr": HILL_TIERS[idx][2] if idx is not None else "—",
+            "tone": _TIER_TONE[idx] if idx is not None else "",
+            "index": idx, "bands": bands, "next_text": nxt,
+            "bracket": "1~100점 척도"}
+
+
+def endurance_tier(score, age=None, sex: str = "M") -> str:
+    """이전 버전 호환용 — 등급 이름만 돌려줍니다."""
+    return endurance_meta(score, age, sex)["tier"]
+
+
+def age_from_birth(birth) -> float:
+    """생년월일(또는 연도)에서 만 나이. 알 수 없으면 NaN."""
+    if birth is None or str(birth).strip() == "":
+        return float("nan")
+    try:
+        b = pd.to_datetime(str(birth), errors="coerce")
+        if pd.isna(b):
+            y = float(str(birth).strip()[:4])
+            return float(date.today().year - y)
+        t = date.today()
+        return float(t.year - b.year - ((t.month, t.day) < (b.month, b.day)))
+    except Exception:
+        return float("nan")
 
 
 def garmin_race_predictions(g: dict) -> list[tuple[str, str]]:
