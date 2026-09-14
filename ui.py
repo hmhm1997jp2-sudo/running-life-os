@@ -196,13 +196,13 @@ div[data-testid="stMetricDelta"] { font-size:.76rem !important; font-weight:600 
 }
 .stButton>button:active, .stFormSubmitButton>button:active { transform:translateY(0); }
 .stButton>button[kind="primary"], .stFormSubmitButton>button[kind="primary"],
+.stFormSubmitButton>button[kind="primaryFormSubmit"],
 .stDownloadButton>button[kind="primary"] {
   background:var(--accent) !important; color:#fff !important;
   border-color:transparent !important; box-shadow:var(--shadow-md);
 }
-.stButton>button[kind="primary"]:hover, .stFormSubmitButton>button[kind="primary"]:hover {
-  filter:brightness(1.06);
-}
+.stButton>button[kind="primary"]:hover, .stFormSubmitButton>button[kind="primary"]:hover,
+.stFormSubmitButton>button[kind="primaryFormSubmit"]:hover { filter:brightness(1.06); }
 
 /* ── 입력 ───────────────────────────────────────────── */
 .stTextInput input, .stNumberInput input, .stDateInput input, .stTextArea textarea,
@@ -279,6 +279,38 @@ div[data-testid="stAlert"] { border-radius:var(--r-md); border:1px solid var(--l
 .rl-bar > i.bad  { background:var(--bad); }
 
 .rl-divider { height:1px; background:var(--line); margin:26px 0 18px; border:0; }
+
+/* ── 심박존 비교 표 ─────────────────────────────────── */
+.rl-ztable { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+.rl-ztable th {
+  font-size:.68rem; font-weight:600; letter-spacing:.07em; text-transform:uppercase;
+  color:var(--text-3); padding:0 0 9px; text-align:right; white-space:nowrap;
+}
+.rl-ztable th:first-child { text-align:left; }
+.rl-ztable td {
+  padding:10px 0; border-top:1px solid var(--line-soft);
+  text-align:right; font-weight:650; color:var(--text); font-size:.9rem; white-space:nowrap;
+}
+.rl-ztable td:first-child {
+  text-align:left; font-weight:600; color:var(--text-2); font-size:.86rem;
+  padding-right:14px; width:38%;
+}
+.rl-ztable td + td { padding-left:14px; }
+.rl-ztable .prim { color:var(--text); }
+.rl-ztable .sec  { color:var(--text-3); font-weight:600; }
+.rl-zdot { width:9px; height:9px; border-radius:3px; display:inline-block;
+           margin-right:9px; vertical-align:middle; }
+
+/* ── 존 막대 (bpm 축 위의 구간) ─────────────────────── */
+.rl-zbar { display:flex; height:44px; border-radius:12px; overflow:hidden;
+           border:1px solid var(--line); }
+.rl-zbar > div { display:flex; flex-direction:column; align-items:center;
+                 justify-content:center; gap:1px; min-width:0; padding:0 2px; }
+.rl-zbar .zn { font-size:.68rem; font-weight:750; letter-spacing:-.01em; }
+.rl-zbar .zr { font-size:.63rem; font-weight:600; opacity:.75;
+               font-variant-numeric:tabular-nums; }
+.rl-zends { display:flex; justify-content:space-between; margin-top:5px;
+            font-size:.68rem; color:var(--text-3); font-variant-numeric:tabular-nums; }
 </style>
 """
 
