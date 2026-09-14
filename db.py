@@ -1,0 +1,283 @@
+"""
+Running Life OS - 데이터 저장소 모듈 (db.py)
+============================================
+Google Sheets(기본) 와 로컬 엑셀(자동 대체)을 같은 함수로 다룹니다.
+
+  - st.secrets 에 [gcp_service_account] 가 있으면  → Google Sheets 사용
+  - 없으면                                          → 로컬 엑셀 파일 사용 (내 PC 테스트용)
+
+app.py 에서는 저장 방식을 신경 쓸 필요 없이 아래 4개만 쓰면 됩니다.
+    db.init_db()                  # 최초 1회 (시트 자동 생성)
+    db.load_data("Workouts")      # 읽기  → DataFrame
+    db.append_rows("Workouts", df)# 추가
+    db.write_sheet("Workouts", df)# 통째로 덮어쓰기(수정/삭제)
+"""
+
+from __future__ import annotations
+
+import os
+import pandas as pd
+import numpy as np
+import streamlit as st
+
+SPREADSHEET_NAME = "Running Life OS Database"
+EXCEL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "Running Life OS Database.xlsx")
+
+# ---------------------------------------------------------------------------
+# 스키마 정의 — 여기에 컬럼을 추가하면 자동으로 시트에도 반영됩니다.
+# ---------------------------------------------------------------------------
+SCHEMA: dict[str, list[str]] = {
+    "Athlete": ["AthleteID", "Name", "BirthDate", "Sex", "HeightCm",
+                "CurrentWeightKg", "StartWeightKg", "HRRest", "HRMax", "LTHR"],
+    "Projects": ["ProjectID", "ProjectName", "Status", "GoalType", "GoalValue",
+                 "StartDate", "TargetDate", "Description"],
+    "Workouts": ["WorkoutID", "ProjectID", "WorkoutDate", "WorkoutType", "DistanceKm",
+                 "DurationMinutes", "PaceSec", "AvgHeartRate", "MaxHeartRate", "AvgPower",
+                 "AvgCadence", "ElevationGainM", "Temperature", "Surface", "ShoeID",
+                 "AerobicTE", "AnaerobicTE", "PrimaryBenefit",
+                 "RPE", "LegFatigue", "CardioFatigue", "Notes", "SourceKey"],
+    # ── 가민 일일 지표 (Connect 홈에서 매일 보이는 값) ──────────────────────
+    "DailyStatus": ["StatusID", "StatusDate", "TrainingStatus", "AcuteLoad", "LoadRatio",
+                    "RecoveryTimeHr", "TrainingReadiness", "BodyBattery",
+                    "HRVStatus", "HRVms", "SleepScore", "RestingHR",
+                    "IntensityMinutes", "Notes"],
+    # ── 가민 주간 지표 (Connect 통계에서 주 1회 확인) ──────────────────────
+    "Metrics": ["MetricID", "MetricDate", "VO2Max", "FitnessAge",
+                "EnduranceScore", "HillScore",
+                "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
+                "Pred5K", "Pred10K", "PredHalf", "PredFull",
+                "LTPace", "LTHR", "LTPower",
+                "WeightKg", "BodyFatPct", "Notes"],
+    "Shoes": ["ShoeID", "ShoeName", "Brand", "PurchaseDate", "InitialDistanceKm",
+              "TargetDistanceKm", "Status", "Category", "Notes"],
+    "Races": ["RaceID", "ProjectID", "RaceDate", "RaceName", "Distance", "DistanceKm",
+              "GoalTime", "ActualTime", "ShoeID", "ResultStatus", "Notes"],
+    "CoachNotes": ["NoteID", "ProjectID", "NoteDate", "Category", "NoteText"],
+    "TrainingPlans": ["PlanID", "PlanDate", "GarminPlan", "CopilotPlan",
+                      "SelectedPlan", "Status", "Notes"],
+}
+
+# 숫자로 변환할 컬럼
+NUMERIC_COLS = {
+    "HeightCm", "CurrentWeightKg", "StartWeightKg", "HRRest", "HRMax", "LTHR",
+    "DistanceKm", "DurationMinutes", "PaceSec", "AvgHeartRate", "MaxHeartRate",
+    "AvgPower", "AvgCadence", "ElevationGainM", "Temperature", "RPE", "LegFatigue",
+    "CardioFatigue", "TrainingReadiness", "BodyBattery", "SleepScore", "RestingHR",
+    "WeightKg", "BodyFatPct", "VO2Max", "LTPower", "InitialDistanceKm",
+    "TargetDistanceKm",
+    # 가민 지표
+    "AcuteLoad", "LoadRatio", "RecoveryTimeHr", "HRVms", "IntensityMinutes",
+    "FitnessAge", "EnduranceScore", "HillScore",
+    "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
+    "AerobicTE", "AnaerobicTE",
+}
+
+DEFAULT_ATHLETE = {
+    "AthleteID": "ATH-001", "Name": "Runner", "BirthDate": "", "Sex": "M",
+    "HeightCm": 180, "CurrentWeightKg": 85.0, "StartWeightKg": 115.0,
+    "HRRest": 55, "HRMax": 190, "LTHR": 170,
+}
+
+
+# ---------------------------------------------------------------------------
+# 저장 방식 판별
+# ---------------------------------------------------------------------------
+def use_gsheets() -> bool:
+    try:
+        return "gcp_service_account" in st.secrets
+    except Exception:
+        return False
+
+
+def backend_name() -> str:
+    return "Google Sheets" if use_gsheets() else "로컬 엑셀 파일"
+
+
+@st.cache_resource(show_spinner=False)
+def _spreadsheet():
+    """gspread 스프레드시트 핸들 (세션당 1회 연결)."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets",
+              "https://www.googleapis.com/auth/drive"]
+    info = dict(st.secrets["gcp_service_account"])
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
+    client = gspread.authorize(creds)
+
+    name = st.secrets.get("SPREADSHEET_NAME", SPREADSHEET_NAME)
+    key = st.secrets.get("SPREADSHEET_KEY", None)
+    return client.open_by_key(key) if key else client.open(name)
+
+
+# ---------------------------------------------------------------------------
+# 초기화
+# ---------------------------------------------------------------------------
+def init_db() -> None:
+    """없는 시트를 만들고 헤더를 채웁니다. 기존 데이터는 건드리지 않습니다."""
+    if use_gsheets():
+        sh = _spreadsheet()
+        existing = {ws.title for ws in sh.worksheets()}
+        for name, cols in SCHEMA.items():
+            if name not in existing:
+                ws = sh.add_worksheet(title=name, rows=200, cols=max(12, len(cols)))
+                ws.update(range_name="A1", values=[cols])
+                if name == "Athlete":
+                    ws.append_row([str(DEFAULT_ATHLETE.get(c, "")) for c in cols],
+                                  value_input_option="USER_ENTERED")
+    else:
+        if not os.path.exists(EXCEL_FILE):
+            with pd.ExcelWriter(EXCEL_FILE, engine="openpyxl") as w:
+                for name, cols in SCHEMA.items():
+                    df = pd.DataFrame(columns=cols)
+                    if name == "Athlete":
+                        df = pd.DataFrame([DEFAULT_ATHLETE])[cols]
+                    df.to_excel(w, sheet_name=name, index=False)
+        else:
+            xl = pd.ExcelFile(EXCEL_FILE)
+            missing = [s for s in SCHEMA if s not in xl.sheet_names]
+            if missing:
+                data = {s: pd.read_excel(EXCEL_FILE, sheet_name=s) for s in xl.sheet_names}
+                for s in missing:
+                    data[s] = pd.DataFrame(columns=SCHEMA[s])
+                _atomic_excel_write(data)
+
+
+def _atomic_excel_write(sheets: dict[str, pd.DataFrame]) -> None:
+    """임시파일에 쓰고 교체 — 중간에 실패해도 원본이 깨지지 않습니다."""
+    tmp = EXCEL_FILE + ".tmp"
+    with pd.ExcelWriter(tmp, engine="openpyxl") as w:
+        for name, df in sheets.items():
+            df.to_excel(w, sheet_name=name, index=False)
+    os.replace(tmp, EXCEL_FILE)
+
+
+# ---------------------------------------------------------------------------
+# 읽기
+# ---------------------------------------------------------------------------
+def _normalize(df: pd.DataFrame, sheet: str) -> pd.DataFrame:
+    cols = SCHEMA.get(sheet, list(df.columns))
+    for c in cols:
+        if c not in df.columns:
+            df[c] = np.nan
+    extra = [c for c in df.columns if c not in cols]
+    df = df[cols + extra]
+    for c in df.columns:
+        if c in NUMERIC_COLS:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        else:
+            df[c] = df[c].astype(object).where(df[c].notna(), "")
+    return df.reset_index(drop=True)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _read_raw(sheet: str, version: int = 0) -> pd.DataFrame:
+    if use_gsheets():
+        ws = _spreadsheet().worksheet(sheet)
+        values = ws.get_all_values()
+        if not values:
+            return pd.DataFrame(columns=SCHEMA.get(sheet, []))
+        header, rows = values[0], values[1:]
+        df = pd.DataFrame(rows, columns=header)
+        df = df.replace("", np.nan)
+        return df.dropna(how="all")
+    return pd.read_excel(EXCEL_FILE, sheet_name=sheet)
+
+
+def load_data(sheet: str) -> pd.DataFrame:
+    try:
+        raw = _read_raw(sheet, st.session_state.get("_db_version", 0))
+    except Exception as e:
+        st.error(f"'{sheet}' 시트를 읽지 못했습니다: {e}")
+        raw = pd.DataFrame(columns=SCHEMA.get(sheet, []))
+    return _normalize(raw, sheet)
+
+
+def _bump():
+    """캐시 무효화 — 쓰기 직후 호출."""
+    st.session_state["_db_version"] = st.session_state.get("_db_version", 0) + 1
+    _read_raw.clear()
+
+
+# ---------------------------------------------------------------------------
+# 쓰기
+# ---------------------------------------------------------------------------
+def _to_cells(df: pd.DataFrame, cols: list[str]) -> list[list[str]]:
+    out = df.reindex(columns=cols).copy()
+    out = out.replace([np.inf, -np.inf], np.nan)
+    return [["" if (pd.isna(v)) else str(v) for v in row]
+            for row in out.itertuples(index=False, name=None)]
+
+
+def write_sheet(sheet: str, df: pd.DataFrame) -> None:
+    """시트 전체 덮어쓰기 (수정/삭제용)."""
+    cols = SCHEMA.get(sheet, list(df.columns))
+    if use_gsheets():
+        ws = _spreadsheet().worksheet(sheet)
+        ws.clear()
+        ws.update(range_name="A1", values=[cols] + _to_cells(df, cols),
+                  value_input_option="USER_ENTERED")
+    else:
+        xl = pd.ExcelFile(EXCEL_FILE)
+        data = {s: (df.reindex(columns=cols) if s == sheet
+                    else pd.read_excel(EXCEL_FILE, sheet_name=s))
+                for s in xl.sheet_names}
+        _atomic_excel_write(data)
+    _bump()
+
+
+def append_rows(sheet: str, new_df: pd.DataFrame) -> None:
+    """행 추가 (신규 등록용) — Sheets에서는 전체 재작성 없이 append."""
+    if new_df is None or new_df.empty:
+        return
+    cols = SCHEMA.get(sheet, list(new_df.columns))
+    if use_gsheets():
+        ws = _spreadsheet().worksheet(sheet)
+        ws.append_rows(_to_cells(new_df, cols), value_input_option="USER_ENTERED")
+        _bump()
+    else:
+        old = load_data(sheet)
+        write_sheet(sheet, pd.concat([old, new_df.reindex(columns=cols)],
+                                     ignore_index=True))
+
+
+def reset_db() -> None:
+    """모든 시트를 비웁니다 (헤더만 남김). Athlete는 기본값 1행 복원."""
+    for sheet, cols in SCHEMA.items():
+        df = pd.DataFrame([DEFAULT_ATHLETE])[cols] if sheet == "Athlete" \
+            else pd.DataFrame(columns=cols)
+        write_sheet(sheet, df)
+
+
+def export_excel_bytes() -> bytes:
+    """현재 데이터를 엑셀 한 파일로 묶어 백업 다운로드."""
+    import io
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        for sheet in SCHEMA:
+            load_data(sheet).to_excel(w, sheet_name=sheet, index=False)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# 선수 프로필 헬퍼
+# ---------------------------------------------------------------------------
+def get_athlete() -> dict:
+    df = load_data("Athlete")
+    if df.empty:
+        return dict(DEFAULT_ATHLETE)
+    row = df.iloc[0].to_dict()
+    for k, v in DEFAULT_ATHLETE.items():
+        if row.get(k) in ("", None) or (isinstance(row.get(k), float) and np.isnan(row[k])):
+            row[k] = v
+    return row
+
+
+def save_athlete(row: dict) -> None:
+    df = load_data("Athlete")
+    base = dict(DEFAULT_ATHLETE)
+    if not df.empty:
+        base.update({k: v for k, v in df.iloc[0].to_dict().items() if v not in ("", None)})
+    base.update(row)
+    write_sheet("Athlete", pd.DataFrame([base]))
