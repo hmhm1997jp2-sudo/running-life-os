@@ -409,7 +409,8 @@ with tab_dash:
     weekly = ana.weekly_summary(df_w)
     ZM = st.session_state.get("zone_model", ana.DEFAULT_ZONE_MODEL)
     P_HIST = ana.profile_history(df_metrics, PROFILE_NOW)
-    zoned = ana.assign_zones(df_w, ZM, P_HIST)
+    _seg, _ = ana.zone_segments(df_w, db.load_data("Laps"))
+    zoned = ana.assign_zones(_seg, ZM, P_HIST)
     inten = ana.intensity_distribution(zoned, ZM)
     evo2 = ana.effective_vo2max(df_w, HR_REST, HR_MAX)
 
@@ -754,6 +755,71 @@ with tab_work:
                     st.dataframe(show, width="stretch", hide_index=True,
                                  column_config={"날짜": st.column_config.DateColumn(format="YYYY-MM-DD")})
 
+            df_laps = db.load_data("Laps")
+            if not df_laps.empty:
+                with_laps = view[view["WorkoutID"].astype(str).isin(
+                    df_laps["WorkoutID"].astype(str))]
+                if not with_laps.empty:
+                    with ui.card("laps"):
+                        ui.head("🔁 구간(랩) 보기", "활동 상세 CSV로 가져온 훈련만 표시됩니다")
+                        lopts = {f"{r.WorkoutDate:%Y-%m-%d} · {r.WorkoutType} · "
+                                 f"{r.DistanceKm:.2f}km": r.WorkoutID
+                                 for r in with_laps.iloc[::-1].itertuples()}
+                        lpick = st.selectbox("훈련 선택", list(lopts), key="lap_pick")
+                        LL = df_laps[df_laps["WorkoutID"].astype(str) == str(lopts[lpick])].copy()
+                        if not LL.empty:
+                            CL = ana.classify_laps(LL)
+                            shape = ana.interval_shape(CL)
+                            dcp = ana.decoupling(CL[CL["역할"] != "자투리"])
+                            dtone, dtxt = ana.decoupling_verdict(dcp)
+                            st.markdown(
+                                f"<div style='margin-bottom:10px'>{ui.pill(shape, 'info')} "
+                                + (ui.pill(f"심박 디커플링 {dcp:+.1f}%", dtone)
+                                   if np.isfinite(dcp) else "")
+                                + f"</div><p class='rl-sub' style='margin-top:-4px'>{dtxt}</p>",
+                                unsafe_allow_html=True)
+
+                            rs = ana.lap_role_summary(CL)
+                            if not rs.empty and len(rs) > 1:
+                                st.markdown("<p class='rl-sub' style='margin:10px 0 2px'>"
+                                            "<b>역할별 요약</b> — 인터벌·템포런은 이 표의 "
+                                            "‘반복’ 행이 실제 훈련 강도입니다</p>",
+                                            unsafe_allow_html=True)
+                                st.dataframe(rs, width="stretch", hide_index=True)
+
+                            CL = CL.sort_values("LapNo")
+                            show_l = pd.DataFrame({
+                                "랩": CL["LapNo"].astype(int),
+                                "역할": CL["역할"],
+                                "거리(km)": CL["DistanceKm"].round(2),
+                                "시간": CL["DurationMinutes"].apply(lambda v: ana.time_str(v * 60)),
+                                "페이스": CL["PaceSec"].apply(ana.pace_str),
+                                "평균심박": CL["AvgHeartRate"],
+                                "최대심박": CL["MaxHeartRate"],
+                                "케이던스": CL["AvgCadence"],
+                                "보폭(m)": CL["AvgStrideM"],
+                            })
+                            if ui.is_mobile():
+                                ui.item_list([
+                                    (f"랩 {int(r['랩'])} · {r['역할']} · {r['페이스']}",
+                                     f"{r['거리(km)']}km · {r['시간']} · {r['평균심박']}bpm")
+                                    for _, r in show_l.iterrows()])
+                            else:
+                                st.dataframe(show_l, width="stretch", hide_index=True)
+
+                            lp = CL[(CL["PaceSec"] > 0) & (CL["역할"] != "자투리")]
+                            if len(lp) > 1:
+                                st.altair_chart(alt.Chart(lp).mark_bar(cornerRadius=3).encode(
+                                    x=alt.X("LapNo:O", title="랩"),
+                                    y=alt.Y("PaceSec:Q", title="페이스(초/km)",
+                                            scale=alt.Scale(zero=False, reverse=True)),
+                                    color=alt.Color("역할:N", title=None, scale=alt.Scale(
+                                        domain=ana.LAP_ROLES,
+                                        range=["#94a3b8", "#ef4444", "#34d399",
+                                               "#a5b4fc", "#3b5bdb", "#e2e8f0"])),
+                                    tooltip=["LapNo", "역할", "DistanceKm", "AvgHeartRate"]
+                                ).properties(height=ui.chart_height(220, 190)), width="stretch")
+
             with ui.card("edit"):
                 ui.head("✏️ 수정 / 삭제")
                 opts = {f"{r.WorkoutDate:%Y-%m-%d} · {r.WorkoutType} · {r.DistanceKm:.2f}km": r.WorkoutID
@@ -971,7 +1037,14 @@ with tab_work:
             else:
                 st.warning("프로필에서 최대 심박(과 LTHR)을 먼저 입력하세요.")
 
-        zoned = ana.assign_zones(df_w, ZM, hist)
+        seg, seg_stats = ana.zone_segments(df_w, db.load_data("Laps"))
+        zoned = ana.assign_zones(seg, ZM, hist)
+        if seg_stats.get("lap_workouts"):
+            st.caption(
+                f"🔁 랩이 있는 훈련 {seg_stats['lap_workouts']}건은 **랩 단위**로 존을 매깁니다"
+                f"(구간 {seg_stats['lap_segments']}개). 나머지 "
+                f"{seg_stats['total_workouts'] - seg_stats['lap_workouts']}건은 세션 평균 심박 기준입니다 — "
+                "인터벌처럼 강약이 섞인 훈련은 랩이 있어야 정확합니다.")
 
         chg = ana.profile_changes(hist)
         if not chg.empty:
@@ -1101,8 +1174,9 @@ with tab_work:
                     ui.head("🎚️ 강도 분포 (최근 90일)",
                             "자세한 존 분석은 ‘🎚️ 심박존’ 탭에서")
                     _zm = st.session_state.get("zone_model", ana.DEFAULT_ZONE_MODEL)
+                    _sg, _ = ana.zone_segments(df_w, db.load_data("Laps"))
                     _zd = ana.assign_zones(
-                        df_w, _zm, ana.profile_history(db.load_data("Metrics"), PROFILE_NOW))
+                        _sg, _zm, ana.profile_history(db.load_data("Metrics"), PROFILE_NOW))
                     if inten := ana.intensity_distribution(_zd, _zm):
                         zd = pd.DataFrame({"존": list(inten["zone_pct"]),
                                            "비율": list(inten["zone_pct"].values())})
@@ -1239,69 +1313,331 @@ with tab_work:
 
     # ── 2-5 가져오기 ───────────────────────────────────────────────────────
     with s_imp:
-        with ui.card("imp"):
-            ui.head("📥 Garmin CSV / XLSX 가져오기",
-                    "Garmin Connect → 활동 → 내보내기(CSV) 파일을 올리세요")
-            up = st.file_uploader("파일", type=["csv", "xlsx"], label_visibility="collapsed")
-            if up is not None:
+        # 가민 CSV 컬럼명 → 앱 필드
+        GARMIN_MAP = {
+            "DistanceKm":      ["거리 km", "거리", "distance"],
+            "DurationMinutes": ["시간", "time"],
+            "AvgHeartRate":    ["평균 심박 bpm", "평균 심박수", "평균 심박", "avg hr"],
+            "MaxHeartRate":    ["최대심박 bpm", "최대 심박수", "최대심박", "max hr"],
+            "AvgPower":        ["평균 파워 w", "평균 파워", "avg power"],
+            "AvgCadence":      ["평균 달리기 케이던스 보/분", "평균 케이던스", "avg run cadence"],
+            "ElevGainM":       ["총 상승 m", "총 상승", "상승"],
+            "ElevLossM":       ["총 하강 m", "총 하강", "하강"],
+            "AvgGCTms":        ["평균 지면 접촉 시간 ms", "지면 접촉"],
+            "AvgStrideM":      ["평균 보폭 m", "평균 보폭"],
+            "AvgVertOscCm":    ["평균 수직 진동 cm", "수직 진동"],
+            "AvgVertRatioPct": ["평균 수직 비율 %", "수직 비율"],
+            "Calories":        ["칼로리 c", "칼로리", "calories"],
+            "TempC":           ["평균 온도", "온도", "temperature"],
+        }
+        SUMMARY_LABELS = {"요약", "summary", "합계", "total", "전체"}
+
+        def pick(cand, keys):
+            """정확히 일치하는 이름 우선 ('시간'이 '누적 시간'보다 먼저)."""
+            low = {str(c).strip().lower(): c for c in cand}
+            for k in keys:
+                if k.lower() in low:
+                    return low[k.lower()]
+            for k in keys:
+                for c in cand:
+                    if k.lower() in str(c).strip().lower():
+                        return c
+            return None
+
+        def gnum(v):
+            """가민 CSV의 '--' 같은 빈 값을 안전하게 처리."""
+            t = str(v).strip().replace(",", "")
+            if t in ("", "--", "-", "nan", "None"):
+                return np.nan
+            try:
+                f = float(t)
+                return f if np.isfinite(f) else np.nan
+            except ValueError:
+                return np.nan
+
+        def gdur(v):
+            """'5:48.4' / '49:16' / '1:02:33' → 분"""
+            t = str(v).strip()
+            if t in ("", "--", "-"):
+                return np.nan
+            if ":" in t:
                 try:
-                    raw = pd.read_csv(up) if up.name.endswith(".csv") else pd.read_excel(up)
-                except Exception as e:
-                    st.error(f"파일을 읽지 못했습니다: {e}")
-                    raw = pd.DataFrame()
+                    p = [float(x) for x in t.split(":")]
+                except ValueError:
+                    return np.nan
+                return p[0] * 60 + p[1] + p[2] / 60 if len(p) == 3 else p[0] + p[1] / 60
+            return gnum(t)
+
+        with ui.card("imp"):
+            ui.head("📥 Garmin CSV 가져오기",
+                    "활동 목록(여러 훈련)과 활동 상세(한 훈련의 랩) 모두 지원합니다")
+            up = st.file_uploader("파일", type=["csv", "xlsx"], label_visibility="collapsed")
+
+            if up is None:
+                ui.rows([
+                    ("활동 목록", "Connect → 활동 → 목록 상단 내보내기 · 여러 훈련을 한 번에"),
+                    ("활동 상세(랩)", "Connect → 활동 하나 → 랩 표 내보내기 · 구간·러닝 다이나믹스 포함"),
+                ])
+                st.caption("상세(랩) 파일에는 날짜가 없으므로 화면에서 직접 지정합니다. "
+                           "맨 아래 ‘요약’ 행이 있으면 그것을 훈련 1건의 합계로 씁니다.")
+            else:
+                raw = pd.DataFrame()
+                for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
+                    try:
+                        up.seek(0)
+                        raw = (pd.read_csv(up, encoding=enc)
+                               if up.name.lower().endswith(".csv") else pd.read_excel(up))
+                        break
+                    except Exception:
+                        continue
+                if raw.empty:
+                    st.error("파일을 읽지 못했습니다. CSV 인코딩을 확인해 주세요.")
 
                 if not raw.empty:
-                    st.dataframe(raw.head(4), width="stretch")
                     cand = list(raw.columns)
+                    col = {k: pick(cand, v) for k, v in GARMIN_MAP.items()}
+                    date_col = pick(cand, ["날짜", "date", "활동 날짜", "시작 시간"])
+                    first = str(cand[0]).strip().lower()
+                    is_lap = (first in ("랩", "lap", "구간", "인터벌")) and not date_col
 
-                    def guess(keys):
-                        for k in keys:
-                            for c in cand:
-                                if k.lower() in str(c).lower():
-                                    return c
-                        return cand[0]
+                    kind = st.radio(
+                        "파일 종류", ["랩(구간) — 훈련 1건", "활동 목록 — 여러 훈련"],
+                        index=0 if is_lap else 1, horizontal=True, key="imp_kind")
+                    st.dataframe(raw.head(4), width="stretch")
 
-                    st.markdown("**컬럼 연결** — 자동으로 잡힌 값을 확인하고 틀리면 바꾸세요.")
-                    mc = ui.cols(3, 1, keep_row=True)
-                    c_date = mc[0].selectbox("날짜", cand, index=cand.index(guess(["날짜", "date", "시작"])))
-                    c_dist = mc[1 % len(mc)].selectbox("거리", cand, index=cand.index(guess(["거리", "distance"])))
-                    c_dur = mc[2 % len(mc)].selectbox("시간", cand, index=cand.index(guess(["시간", "time"])))
-                    mc2 = ui.cols(3, 1, keep_row=True)
-                    c_hr = mc2[0].selectbox("평균 심박", ["(없음)"] + cand,
-                                            index=(cand.index(guess(["평균 심박", "avg hr"])) + 1)
-                                            if guess(["평균 심박", "avg hr"]) in cand else 0)
-                    unit = mc2[1 % len(mc2)].selectbox("거리 단위", ["km", "m", "mile"])
-                    dtype = mc2[2 % len(mc2)].selectbox("기본 훈련 유형", WORKOUT_TYPES)
+                    found = [k for k, v in col.items() if v]
+                    st.caption("자동 인식: " + ", ".join(
+                        f"{col[k]}" for k in ["DistanceKm", "DurationMinutes", "AvgHeartRate",
+                                              "AvgCadence", "TempC"] if col.get(k)))
+                    with st.expander("컬럼 연결 직접 지정"):
+                        for k in ["DistanceKm", "DurationMinutes", "AvgHeartRate", "MaxHeartRate"]:
+                            opts = ["(없음)"] + cand
+                            cur = col.get(k)
+                            col[k] = st.selectbox(
+                                k, opts, index=opts.index(cur) if cur in cand else 0,
+                                key=f"imp_col_{k}")
+                            if col[k] == "(없음)":
+                                col[k] = None
 
-                    if st.button("데이터베이스에 저장", width="stretch", type="primary"):
-                        exist = set(db.load_data("Workouts")["SourceKey"].astype(str))
-                        mult = {"km": 1.0, "m": 0.001, "mile": 1.609344}[unit]
-                        rows, dup = [], 0
-                        for _, r in raw.iterrows():
-                            dist = fnum(str(r[c_dist]).replace(",", "")) * mult
-                            dur = parse_duration(r[c_dur])
-                            try:
-                                dt = pd.to_datetime(r[c_date]).strftime("%Y-%m-%d")
-                            except Exception:
+                    unit = st.selectbox("거리 단위", ["km", "m", "mile"], key="imp_unit")
+                    mult = {"km": 1.0, "m": 0.001, "mile": 1.609344}[unit]
+
+                    def rowvals(r):
+                        out = {}
+                        for k, c in col.items():
+                            if not c:
                                 continue
-                            if dist <= 0 or dur <= 0:
+                            out[k] = gdur(r[c]) if k == "DurationMinutes" else gnum(r[c])
+                        out["DistanceKm"] = out.get("DistanceKm", np.nan) * mult
+                        return out
+
+                    # ══════════════════ 랩(구간) 파일 ══════════════════
+                    if kind.startswith("랩"):
+                        lapcol = cand[0]
+                        is_sum = raw[lapcol].astype(str).str.strip().str.lower().isin(SUMMARY_LABELS)
+                        summary_row = raw[is_sum].iloc[0] if is_sum.any() else None
+                        lap_rows = raw[~is_sum]
+
+                        laps = []
+                        for i, (_, r) in enumerate(lap_rows.iterrows()):
+                            v = rowvals(r)
+                            d_, t_ = v.get("DistanceKm", np.nan), v.get("DurationMinutes", np.nan)
+                            if not (np.isfinite(d_) and d_ > 0 and np.isfinite(t_) and t_ > 0):
                                 continue
-                            key = src_key(dt, dist, dur)
-                            if key in exist:
-                                dup += 1
-                                continue
-                            exist.add(key)
-                            rows.append({
-                                "WorkoutID": new_id("WO"), "ProjectID": "",
-                                "WorkoutDate": dt, "WorkoutType": dtype,
-                                "DistanceKm": round(dist, 2), "DurationMinutes": round(dur, 1),
-                                "PaceSec": round(dur * 60 / dist, 1),
-                                "AvgHeartRate": fnum(r[c_hr]) if c_hr != "(없음)" else "",
-                                "Notes": "Garmin 가져오기", "SourceKey": key})
-                        if rows:
-                            db.append_rows("Workouts", pd.DataFrame(rows))
-                        st.success(f"{len(rows)}건 추가 · 중복 {dup}건 건너뜀")
-                        st.rerun()
+                            v["LapNo"] = i + 1
+                            v["PaceSec"] = round(t_ * 60 / d_, 1)
+                            laps.append(v)
+                        L = pd.DataFrame(laps)
+
+                        if L.empty:
+                            st.warning("거리·시간을 읽지 못했습니다. 컬럼 연결을 확인하세요.")
+                        else:
+                            def agg(field, how="wmean"):
+                                if summary_row is not None and col.get(field):
+                                    v = (gdur(summary_row[col[field]]) if field == "DurationMinutes"
+                                         else gnum(summary_row[col[field]]))
+                                    if np.isfinite(v):
+                                        return v * (mult if field == "DistanceKm" else 1)
+                                if field not in L.columns:
+                                    return np.nan
+                                s_ = L[field].dropna()
+                                if s_.empty:
+                                    return np.nan
+                                if how == "sum":
+                                    return float(s_.sum())
+                                if how == "max":
+                                    return float(s_.max())
+                                w = L.loc[s_.index, "DurationMinutes"]
+                                return float((s_ * w).sum() / w.sum()) if w.sum() else float(s_.mean())
+
+                            tot_d = agg("DistanceKm", "sum")
+                            tot_m = agg("DurationMinutes", "sum")
+                            hr = agg("AvgHeartRate")
+                            hrx = agg("MaxHeartRate", "max")
+                            cad = agg("AvgCadence")
+                            pw = agg("AvgPower")
+                            up_m = agg("ElevGainM", "sum")
+                            kcal = agg("Calories", "sum")
+                            tmp = agg("TempC")
+                            gct = agg("AvgGCTms")
+                            stride = agg("AvgStrideM")
+                            vosc = agg("AvgVertOscCm")
+                            vrat = agg("AvgVertRatioPct")
+
+                            st.markdown("**합산 결과** — 훈련 1건으로 저장됩니다"
+                                        + (" *(CSV의 ‘요약’ 행 사용)*" if summary_row is not None else ""))
+                            ui.metrics([
+                                ("총 거리", f"{tot_d:.2f} km", None),
+                                ("총 시간", ana.time_str(tot_m * 60), None),
+                                ("평균 페이스", ana.pace_str(tot_m * 60 / tot_d) if tot_d > 0 else "—", None),
+                                ("평균 심박", f"{hr:.0f}" if np.isfinite(hr) else "—",
+                                 f"최고 {hrx:.0f}" if np.isfinite(hrx) else None),
+                            ], per_row_pc=4)
+                            extra = [x for x in [
+                                f"랩 {len(L)}개",
+                                f"케이던스 {cad:.0f}" if np.isfinite(cad) else "",
+                                f"보폭 {stride:.2f}m" if np.isfinite(stride) else "",
+                                f"접지 {gct:.0f}ms" if np.isfinite(gct) else "",
+                                f"수직진동 {vosc:.1f}cm" if np.isfinite(vosc) else "",
+                                f"상승 {up_m:.0f}m" if np.isfinite(up_m) else "",
+                                f"{tmp:.1f}°C" if np.isfinite(tmp) else "",
+                                f"{kcal:.0f}kcal" if np.isfinite(kcal) else "",
+                            ] if x]
+                            st.caption(" · ".join(extra))
+
+                            st.divider()
+                            st.markdown("**CSV에 없는 항목** — 직접 입력하세요.")
+                            d1 = ui.cols(3, 1, keep_row=True)
+                            w_date = d1[0].date_input("훈련 날짜 *", date.today(), key="imp_date")
+                            w_type2 = d1[1 % len(d1)].selectbox("유형 *", WORKOUT_TYPES, key="imp_type")
+                            proj_i = d1[2 % len(d1)].selectbox("프로젝트", list(proj_opts), key="imp_proj")
+                            d2 = ui.cols(3, 1, keep_row=True)
+                            shoe_i = d2[0].selectbox("러닝화", list(shoe_opts), key="imp_shoe")
+                            surf_i = d2[1 % len(d2)].selectbox("노면", SURFACES, key="imp_surf")
+                            rpe_i = d2[2 % len(d2)].slider("RPE (체감강도)", 1, 10, 5, key="imp_rpe")
+
+                            st.markdown("<p class='rl-sub' style='margin:12px 0 2px'>"
+                                        "가민 트레이닝 효과 · 컨디션 (선택)</p>",
+                                        unsafe_allow_html=True)
+                            d3 = ui.cols(3, 1, keep_row=True)
+                            ate_i = d3[0].number_input("유산소 TE", 0.0, 5.0, 0.0, 0.1, key="imp_ate")
+                            nte_i = d3[1 % len(d3)].number_input("무산소 TE", 0.0, 5.0, 0.0, 0.1,
+                                                                 key="imp_nte")
+                            pb_i = d3[2 % len(d3)].selectbox("Primary Benefit", ana.PRIMARY_BENEFIT,
+                                                             key="imp_pb")
+                            d4 = ui.cols(3, 1, keep_row=True)
+                            leg_i = d4[0].slider("다리 피로", 1, 10, 3, key="imp_leg")
+                            car_i = d4[1 % len(d4)].slider("심폐 피로", 1, 10, 3, key="imp_car")
+                            temp_ovr = d4[2 % len(d4)].number_input(
+                                "기온 (°C)", -30.0, 50.0,
+                                float(tmp) if np.isfinite(tmp) else 20.0, 0.5, key="imp_temp",
+                                help="가민 손목 온도는 체온 영향으로 실제 기온보다 높게 나옵니다. "
+                                     "날씨 보정을 쓰려면 실제 기온으로 고치세요.")
+                            note_i = st.text_input("메모", "", key="imp_note")
+
+                            if st.button("훈련 1건 + 랩으로 저장", width="stretch", type="primary"):
+                                exist = set(db.load_data("Workouts")["SourceKey"].astype(str))
+                                key = src_key(w_date, tot_d, tot_m)
+                                if key in exist:
+                                    st.warning("같은 날짜·거리·시간의 훈련이 이미 있습니다.")
+                                else:
+                                    def opt(v, nd=0):
+                                        return round(v, nd) if np.isfinite(v) else ""
+                                    wid = new_id("WO")
+                                    db.append_rows("Workouts", pd.DataFrame([{
+                                        "WorkoutID": wid, "ProjectID": proj_opts[proj_i],
+                                        "WorkoutDate": w_date.strftime("%Y-%m-%d"),
+                                        "WorkoutType": w_type2,
+                                        "DistanceKm": round(tot_d, 2),
+                                        "DurationMinutes": round(tot_m, 1),
+                                        "PaceSec": round(tot_m * 60 / tot_d, 1) if tot_d > 0 else "",
+                                        "AvgHeartRate": opt(hr), "MaxHeartRate": opt(hrx),
+                                        "AvgPower": opt(pw), "AvgCadence": opt(cad),
+                                        "ElevationGainM": opt(up_m),
+                                        "Temperature": temp_ovr, "Surface": surf_i,
+                                        "ShoeID": shoe_opts[shoe_i],
+                                        "Calories": opt(kcal), "AvgGCTms": opt(gct),
+                                        "AvgStrideM": opt(stride, 2), "AvgVertOscCm": opt(vosc, 1),
+                                        "AvgVertRatioPct": opt(vrat, 1),
+                                        "AerobicTE": ate_i or "", "AnaerobicTE": nte_i or "",
+                                        "PrimaryBenefit": pb_i,
+                                        "RPE": rpe_i, "LegFatigue": leg_i, "CardioFatigue": car_i,
+                                        "Notes": note_i or "랩 CSV 가져오기",
+                                        "SourceKey": key}]))
+                                    L2 = L.copy()
+                                    L2["CumMinutes"] = L2["DurationMinutes"].cumsum().round(2)
+                                    L2["WorkoutDate"] = w_date.strftime("%Y-%m-%d")
+                                    L2["WorkoutType"] = w_type2
+                                    L2.insert(0, "WorkoutID", wid)
+                                    L2.insert(0, "LapID",
+                                              [f"LAP-{wid[-8:]}-{i+1:02d}" for i in range(len(L2))])
+                                    db.append_rows("Laps", L2.round(3))
+                                    st.success(f"저장 완료 — {tot_d:.2f}km · 랩 {len(L2)}개")
+                                    st.rerun()
+
+                    # ══════════════════ 활동 목록 파일 ══════════════════
+                    else:
+                        st.divider()
+                        opts_d = ["(직접 지정)"] + cand
+                        date_sel = st.selectbox(
+                            "날짜 컬럼", opts_d,
+                            index=opts_d.index(date_col) if date_col in cand else 0,
+                            key="imp_datecol")
+                        fixed_date = None
+                        if date_sel == "(직접 지정)":
+                            st.warning("날짜 컬럼이 없습니다. 모든 행에 적용할 날짜를 고르세요.")
+                            fixed_date = st.date_input("적용 날짜", date.today(), key="imp_fixdate")
+                        st.markdown("**CSV에 없는 항목** — 모든 행에 같은 값으로 들어갑니다. "
+                                    "개별 값은 저장 후 ‘훈련 이력 → 수정’에서 고치세요.")
+                        a1 = ui.cols(4, 1, keep_row=True)
+                        w_type2 = a1[0].selectbox("기본 훈련 유형", WORKOUT_TYPES, key="imp_type2")
+                        proj_i = a1[1 % len(a1)].selectbox("프로젝트", list(proj_opts), key="imp_proj2")
+                        shoe_i2 = a1[2 % len(a1)].selectbox("러닝화", list(shoe_opts), key="imp_shoe2")
+                        surf_i2 = a1[3 % len(a1)].selectbox("노면", SURFACES, key="imp_surf2")
+
+                        if st.button("데이터베이스에 저장", width="stretch", type="primary"):
+                            exist = set(db.load_data("Workouts")["SourceKey"].astype(str))
+                            rows, dup, skip = [], 0, 0
+                            for _, r in raw.iterrows():
+                                v = rowvals(r)
+                                d_, t_ = v.get("DistanceKm", np.nan), v.get("DurationMinutes", np.nan)
+                                if not (np.isfinite(d_) and d_ > 0 and np.isfinite(t_) and t_ > 0):
+                                    skip += 1
+                                    continue
+                                if date_sel == "(직접 지정)":
+                                    dt = (fixed_date or date.today()).strftime("%Y-%m-%d")
+                                else:
+                                    try:
+                                        dt = pd.to_datetime(r[date_sel]).strftime("%Y-%m-%d")
+                                    except Exception:
+                                        skip += 1
+                                        continue
+                                key = src_key(dt, d_, t_)
+                                if key in exist:
+                                    dup += 1
+                                    continue
+                                exist.add(key)
+                                row = {"WorkoutID": new_id("WO"), "ProjectID": proj_opts[proj_i],
+                                       "WorkoutDate": dt, "WorkoutType": w_type2,
+                                       "DistanceKm": round(d_, 2), "DurationMinutes": round(t_, 1),
+                                       "PaceSec": round(t_ * 60 / d_, 1),
+                                       "ShoeID": shoe_opts[shoe_i2], "Surface": surf_i2,
+                                       "Notes": "Garmin 가져오기", "SourceKey": key}
+                                for k in ["AvgHeartRate", "MaxHeartRate", "AvgPower", "AvgCadence",
+                                          "Calories", "AvgGCTms", "AvgStrideM",
+                                          "AvgVertOscCm", "AvgVertRatioPct"]:
+                                    val = v.get(k, np.nan)
+                                    if np.isfinite(val):
+                                        row[k] = round(val, 2)
+                                if np.isfinite(v.get("TempC", np.nan)):
+                                    row["Temperature"] = round(v["TempC"], 1)
+                                if np.isfinite(v.get("ElevGainM", np.nan)):
+                                    row["ElevationGainM"] = round(v["ElevGainM"])
+                                rows.append(row)
+                            if rows:
+                                db.append_rows("Workouts", pd.DataFrame(rows))
+                            st.success(f"{len(rows)}건 추가 · 중복 {dup}건 · 건너뜀 {skip}건")
+                            st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
