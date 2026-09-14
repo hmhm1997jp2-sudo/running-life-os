@@ -146,7 +146,7 @@ def init_db() -> None:
 
 def _atomic_excel_write(sheets: dict[str, pd.DataFrame]) -> None:
     """임시파일에 쓰고 교체 — 중간에 실패해도 원본이 깨지지 않습니다."""
-    tmp = EXCEL_FILE + ".tmp"
+    tmp = EXCEL_FILE + ".tmp.xlsx"   # pandas가 확장자로 엔진을 검증하므로 .xlsx 유지
     with pd.ExcelWriter(tmp, engine="openpyxl") as w:
         for name, df in sheets.items():
             df.to_excel(w, sheet_name=name, index=False)
