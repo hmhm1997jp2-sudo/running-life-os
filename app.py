@@ -85,9 +85,35 @@ def secret(key: str, default=None):
         return default
 
 
+def auto_login_key() -> str | None:
+    """Secrets의 AUTO_LOGIN_KEY — 없으면 자동 로그인 비활성."""
+    k = secret("AUTO_LOGIN_KEY")
+    return str(k) if k not in (None, "") else None
+
+
+def logout() -> None:
+    """로그아웃 — 세션과 URL 토큰을 함께 지웁니다."""
+    st.session_state["auth"] = False
+    try:
+        st.query_params.clear()
+    except Exception:
+        pass
+    st.rerun()
+
+
 def check_password() -> bool:
     if st.session_state.get("auth"):
         return True
+
+    # URL에 ?k=<AUTO_LOGIN_KEY> 가 붙어 있으면 비밀번호 없이 통과 (북마크용)
+    ak = auto_login_key()
+    if ak:
+        try:
+            if st.query_params.get("k") == ak:
+                st.session_state["auth"] = True
+                return True
+        except Exception:
+            pass
 
     real_pw = secret("APP_PASSWORD")
     pw_set = real_pw is not None
@@ -131,8 +157,7 @@ if ui.is_mobile():
     with st.popover("⚙️ 설정", width="stretch"):
         ui.mode_switch()
         if st.button("🔒 잠금", width="stretch"):
-            st.session_state["auth"] = False
-            st.rerun()
+            logout()
 else:
     h1, h2, h3 = st.columns([5, 2, 1])
     h1.markdown("<p class='rl-title'>🏃 Running Life OS</p>"
@@ -140,8 +165,7 @@ else:
                 f"HR {HR_REST:.0f}–{HR_MAX:.0f} bpm</p>", unsafe_allow_html=True)
     ui.mode_switch(h2)
     if h3.button("🔒 잠금", width="stretch"):
-        st.session_state["auth"] = False
-        st.rerun()
+        logout()
 
 st.write("")
 
@@ -1301,6 +1325,27 @@ with tab_admin:
                 st.caption("작성된 노트가 없습니다.")
 
     with a5:
+        with ui.card("autologin"):
+            ui.head("🔗 자동 로그인 링크", "이 링크를 북마크하면 비밀번호를 다시 묻지 않습니다")
+            ak = auto_login_key()
+            if not ak:
+                st.info("Secrets에 `AUTO_LOGIN_KEY = \"아무_긴_문자열\"` 한 줄을 추가하면 "
+                        "여기에 북마크용 링크가 만들어집니다.")
+            else:
+                host = ""
+                try:
+                    host = st.context.headers.get("Host", "") or ""
+                except Exception:
+                    pass
+                base = f"https://{host}" if host and "localhost" not in host else \
+                    st.text_input("앱 주소", "https://내앱이름.streamlit.app",
+                                  help="주소창의 앱 URL을 붙여넣으세요")
+                link = f"{base.rstrip('/')}/?k={ak}"
+                st.code(link, language=None)
+                st.caption("⚠️ 이 링크를 아는 사람은 누구나 비밀번호 없이 들어옵니다. "
+                           "메신저·메일로 보내지 마시고, 새어나갔다 싶으면 Secrets의 "
+                           "`AUTO_LOGIN_KEY` 값만 바꾸면 즉시 무효가 됩니다.")
+
         with ui.card("backup"):
             ui.head("💾 백업", f"현재 저장소: {db.backend_name()}")
             st.download_button("전체 데이터 엑셀로 내려받기", db.export_excel_bytes(),
