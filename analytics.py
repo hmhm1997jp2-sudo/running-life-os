@@ -192,57 +192,180 @@ def load_summary(daily: pd.DataFrame) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 2. 강도 분포 — HR 존 & 폴라라이즈드 80/20
+# 2. 심박존 — 기준 3종(%LTHR / %HRmax / %HRR) + 시점별 LTHR 반영
+#
+#    핵심: 젖산역치(LTHR)는 시간이 지나며 바뀝니다. 그래서 존을 '지금 LTHR'로
+#    일괄 계산하지 않고, 각 훈련 시점에 유효했던 LTHR로 그 훈련의 존을 매깁니다.
+#    (Metrics 시트에 기록된 LTHR 이력을 as-of 조인)
 # ---------------------------------------------------------------------------
 
-def hr_zones(hr_rest: float, hr_max: float) -> list[tuple[str, float, float]]:
-    """%HRR 기반 5존 경계 (bpm)."""
-    def bpm(p): return hr_rest + p * (hr_max - hr_rest)
-    return [
-        ("Z1 회복",   0.0,       bpm(0.60)),
-        ("Z2 유산소", bpm(0.60), bpm(0.70)),
-        ("Z3 템포",   bpm(0.70), bpm(0.80)),
-        ("Z4 역치",   bpm(0.80), bpm(0.90)),
-        ("Z5 VO2max", bpm(0.90), 999.0),
-    ]
+ZONE_MODELS: dict[str, list[tuple[str, float, float]]] = {
+    # 가민 시계의 젖산역치 기반 설정과 동일
+    "%LTHR": [
+        ("Z1 워밍업", 0.67, 0.78),
+        ("Z2 쉬움",   0.78, 0.88),
+        ("Z3 유산소", 0.88, 0.93),
+        ("Z4 한계치", 0.93, 0.98),
+        ("Z5 최대",   0.98, 1.13),
+    ],
+    "%HRmax": [
+        ("Z1 매우 가벼움", 0.50, 0.60),
+        ("Z2 가벼움",      0.60, 0.70),
+        ("Z3 중간",        0.70, 0.80),
+        ("Z4 힘듦",        0.80, 0.90),
+        ("Z5 최대",        0.90, 1.05),
+    ],
+    "%HRR": [   # Karvonen (심박 여유율)
+        ("Z1 회복",   0.50, 0.60),
+        ("Z2 유산소", 0.60, 0.70),
+        ("Z3 템포",   0.70, 0.80),
+        ("Z4 역치",   0.80, 0.90),
+        ("Z5 VO2max", 0.90, 1.05),
+    ],
+}
+DEFAULT_ZONE_MODEL = "%LTHR"
+BELOW_Z1 = "존 미만"
+ZONE_NAMES = lambda model: [n for n, _, _ in ZONE_MODELS[model]]
 
 
-def intensity_distribution(df_work: pd.DataFrame, hr_rest: float, hr_max: float,
-                           lthr: float | None = None, days: int = 90) -> dict:
+def resolve_lthr(lthr=None, hr_max=None) -> float:
+    """LTHR 확정값. 미입력이면 최대심박의 90%로 추정."""
+    v = _num(lthr, 0.0)
+    if v > 0:
+        return v
+    hm = _num(hr_max, 0.0)
+    return hm * 0.90 if hm > 0 else 0.0
+
+
+def zone_bounds(model: str = DEFAULT_ZONE_MODEL, lthr=None,
+                hr_rest=None, hr_max=None) -> list[tuple[str, float, float]]:
+    """특정 시점 기준의 5존 경계(bpm). 화면에 '현재 존표'를 보여줄 때 사용."""
+    spec = ZONE_MODELS.get(model, ZONE_MODELS[DEFAULT_ZONE_MODEL])
+    hr_max, hr_rest = _num(hr_max, 0.0), _num(hr_rest, 0.0)
+    if model == "%LTHR":
+        base = resolve_lthr(lthr, hr_max)
+        return [(n, base * lo, base * hi) for n, lo, hi in spec] if base > 0 else []
+    if model == "%HRmax":
+        return [(n, hr_max * lo, hr_max * hi) for n, lo, hi in spec] if hr_max > 0 else []
+    if hr_max <= 0 or hr_max <= hr_rest:
+        return []
+    rng = hr_max - hr_rest
+    return [(n, hr_rest + rng * lo, hr_rest + rng * hi) for n, lo, hi in spec]
+
+
+def lthr_history(df_metrics: pd.DataFrame, current_lthr=None,
+                 hr_max=None) -> pd.DataFrame:
     """
-    최근 N일 강도 분포. 5존 시간 분포 + 3존(폴라라이즈드) 비율.
-    폴라라이즈드 기준: LT1(≈LTHR-10%) 이하 / LT1~LT2 / LT2(LTHR) 이상
+    LTHR 변경 이력 → [Date, LTHR]. Metrics 시트에 기록된 값만 사용하고,
+    하나도 없으면 프로필의 현재 LTHR(또는 최대심박의 90%)을 단일 값으로 씁니다.
+    """
+    rows = pd.DataFrame(columns=["Date", "LTHR"])
+    if df_metrics is not None and not df_metrics.empty and "LTHR" in df_metrics.columns:
+        m = df_metrics[["MetricDate", "LTHR"]].copy()
+        m["Date"] = pd.to_datetime(m["MetricDate"], errors="coerce")
+        m["LTHR"] = pd.to_numeric(m["LTHR"], errors="coerce")
+        m = m.dropna(subset=["Date", "LTHR"])
+        m = m[m["LTHR"] > 0].sort_values("Date")
+        if not m.empty:
+            # 같은 값이 반복되면 변경 시점만 남긴다
+            m = m.loc[m["LTHR"].ne(m["LTHR"].shift())]
+            rows = m[["Date", "LTHR"]].reset_index(drop=True)
+    if rows.empty:
+        base = resolve_lthr(current_lthr, hr_max)
+        if base <= 0:
+            return rows
+        rows = pd.DataFrame([{"Date": pd.Timestamp("2000-01-01"), "LTHR": base}])
+    return rows.sort_values("Date").reset_index(drop=True)
+
+
+def assign_zones(df_work: pd.DataFrame, model: str = DEFAULT_ZONE_MODEL,
+                 lthr_hist: pd.DataFrame | None = None,
+                 hr_rest=None, hr_max=None) -> pd.DataFrame:
+    """
+    각 훈련에 '그 시점 기준'의 존을 붙입니다.
+    반환 컬럼 추가: LTHRUsed(적용된 LTHR), 존
+    %HRmax·%HRR은 프로필의 최대/안정 심박(고정값)을 사용합니다.
     """
     d = prepare_workouts(df_work)
     if d.empty:
-        return {}
-    cutoff = pd.Timestamp(datetime.now()).normalize() - timedelta(days=days)
-    d = d[(d["WorkoutDate"] >= cutoff) & (d["AvgHeartRate"] > 0) & (d["DurationMinutes"] > 0)]
+        return d.assign(LTHRUsed=np.nan, 존=pd.Series(dtype=str))
+    d = d.sort_values("WorkoutDate").copy()
+
+    if model == "%LTHR":
+        hist = lthr_hist if lthr_hist is not None else pd.DataFrame()
+        if hist.empty:
+            d["LTHRUsed"] = np.nan
+        else:
+            d = pd.merge_asof(d, hist.rename(columns={"Date": "_d"}).sort_values("_d"),
+                              left_on="WorkoutDate", right_on="_d", direction="backward")
+            d = d.rename(columns={"LTHR": "LTHRUsed"}).drop(columns=["_d"], errors="ignore")
+            # 첫 기록 이전의 훈련은 가장 이른 LTHR로 보정
+            d["LTHRUsed"] = d["LTHRUsed"].fillna(float(hist["LTHR"].iloc[0]))
+        spec = ZONE_MODELS["%LTHR"]
+
+        def _z(hr, base):
+            if not (base and base > 0) or not np.isfinite(_num(hr, np.nan)) or hr <= 0:
+                return BELOW_Z1
+            p = hr / base
+            for n, lo, hi in spec:
+                if lo <= p < hi:
+                    return n
+            return spec[-1][0] if p >= spec[-1][2] else BELOW_Z1
+
+        d["존"] = [_z(hr, b) for hr, b in zip(d["AvgHeartRate"], d["LTHRUsed"])]
+    else:
+        bounds = zone_bounds(model, None, hr_rest, hr_max)
+        d["LTHRUsed"] = np.nan
+        d["존"] = [zone_of(hr, bounds) for hr in d["AvgHeartRate"]]
+    return d
+
+
+def zone_of(bpm: float, bounds: list) -> str:
+    """심박(bpm) → 존 이름 (고정 경계용)."""
+    if not bounds or not np.isfinite(_num(bpm, np.nan)) or bpm <= 0:
+        return BELOW_Z1
+    for name, lo, hi in bounds:
+        if lo <= bpm < hi:
+            return name
+    return bounds[-1][0] if bpm >= bounds[-1][2] else BELOW_Z1
+
+
+def _recent(zoned: pd.DataFrame, days: int) -> pd.DataFrame:
+    if zoned is None or zoned.empty:
+        return pd.DataFrame()
+    cut = pd.Timestamp(datetime.now()).normalize() - timedelta(days=days)
+    return zoned[(zoned["WorkoutDate"] >= cut) & (zoned["AvgHeartRate"] > 0)
+                 & (zoned["DurationMinutes"] > 0)]
+
+
+def intensity_distribution(zoned: pd.DataFrame, model: str = DEFAULT_ZONE_MODEL,
+                           days: int = 90) -> dict:
+    """
+    최근 N일 강도 분포 + 폴라라이즈드(저/중/고) 판정.
+    저강도 = Z1~Z2, 중강도 = Z3~Z4, 고강도 = Z5.
+    주의: 세션 '평균' 심박으로 판정하므로 강약이 섞인 인터벌은 실제보다
+          중간 존으로 뭉뚱그려집니다(.fit 스트림이 있어야 정확해집니다).
+    """
+    d = _recent(zoned, days)
     if d.empty:
         return {}
+    names = ZONE_NAMES(model)
+    dist = {n: 0.0 for n in names + [BELOW_Z1]}
+    for z, m in zip(d["존"], d["DurationMinutes"]):
+        dist[z] = dist.get(z, 0.0) + float(m)
+    dist = {k: v for k, v in dist.items() if v > 0}
+    total = sum(dist.values())
 
-    zones = hr_zones(hr_rest, hr_max)
-    dist5 = {name: 0.0 for name, _, _ in zones}
-    for r in d.itertuples():
-        for name, lo, hi in zones:
-            if lo <= r.AvgHeartRate < hi:
-                dist5[name] += r.DurationMinutes
-                break
-
-    lt2 = float(lthr) if lthr and _num(lthr) > 0 else hr_rest + 0.85 * (hr_max - hr_rest)
-    lt1 = lt2 - 0.10 * (hr_max - hr_rest)
-
-    low = float(d.loc[d["AvgHeartRate"] < lt1, "DurationMinutes"].sum())
-    mid = float(d.loc[(d["AvgHeartRate"] >= lt1) & (d["AvgHeartRate"] < lt2), "DurationMinutes"].sum())
-    high = float(d.loc[d["AvgHeartRate"] >= lt2, "DurationMinutes"].sum())
+    low = sum(v for k, v in dist.items() if k in (BELOW_Z1, names[0], names[1]))
+    mid = sum(v for k, v in dist.items() if k in (names[2], names[3]))
+    high = sum(v for k, v in dist.items() if k == names[4])
     tot = low + mid + high
-
     pol = {k: (round(v / tot * 100, 1) if tot else 0.0)
            for k, v in [("low", low), ("mid", mid), ("high", high)]}
 
     if tot == 0:
         verdict = "데이터 부족"
-    elif pol["low"] >= 78 and pol["mid"] <= 10:
+    elif pol["low"] >= 78 and pol["mid"] <= 12:
         verdict = "✅ 폴라라이즈드 (80/20 준수)"
     elif pol["low"] >= 78:
         verdict = "피라미드형 — 중강도 비중 다소 높음"
@@ -252,14 +375,72 @@ def intensity_distribution(df_work: pd.DataFrame, hr_rest: float, hr_max: float,
         verdict = "🚨 고강도 편중 — 이지런 비중을 늘릴 것"
 
     return {
-        "zone_minutes": {k: round(v, 1) for k, v in dist5.items()},
-        "zone_pct": {k: (round(v / sum(dist5.values()) * 100, 1) if sum(dist5.values()) else 0.0)
-                     for k, v in dist5.items()},
-        "polarized_pct": pol,
-        "verdict": verdict,
+        "model": model,
+        "zone_minutes": {k: round(v, 1) for k, v in dist.items()},
+        "zone_pct": {k: (round(v / total * 100, 1) if total else 0.0)
+                     for k, v in dist.items()},
+        "polarized_pct": pol, "verdict": verdict,
         "total_minutes": round(tot, 1),
-        "lt1_bpm": round(lt1), "lt2_bpm": round(lt2),
     }
+
+
+def zone_table(zoned: pd.DataFrame, bounds: list, days: int = 90,
+               model: str = DEFAULT_ZONE_MODEL) -> pd.DataFrame:
+    """존별 상세 — 심박 범위, 세션 수, 시간, 비중, 거리, 평균 페이스."""
+    d = _recent(zoned, days)
+    if d.empty:
+        return pd.DataFrame()
+    rng = {n: f"{lo:.0f}–{hi:.0f}" for n, lo, hi in bounds}
+    if bounds:
+        rng[BELOW_Z1] = f"< {bounds[0][1]:.0f}"
+    tot_min = float(d["DurationMinutes"].sum())
+    rows = []
+    for name in ZONE_NAMES(model) + [BELOW_Z1]:
+        sub = d[d["존"] == name]
+        if sub.empty:
+            continue
+        mins = float(sub["DurationMinutes"].sum())
+        dist = float(sub["DistanceKm"].sum())
+        rows.append({
+            "존": name,
+            "심박(bpm)": rng.get(name, "-"),
+            "세션": int(len(sub)),
+            "시간": time_str(mins * 60),
+            "비중(%)": round(mins / tot_min * 100, 1) if tot_min else 0.0,
+            "거리(km)": round(dist, 1),
+            "평균 페이스": pace_str(mins * 60 / dist) if dist > 0 else "-",
+            "평균 심박": int(round(sub["AvgHeartRate"].mean())),
+        })
+    return pd.DataFrame(rows)
+
+
+def zone_history(zoned: pd.DataFrame, weeks: int = 16) -> pd.DataFrame:
+    """주간 존별 훈련 시간 (긴 형식) — 누적 막대용."""
+    if zoned is None or zoned.empty:
+        return pd.DataFrame(columns=["주", "존", "분"])
+    d = zoned[(zoned["AvgHeartRate"] > 0) & (zoned["DurationMinutes"] > 0)].copy()
+    if d.empty:
+        return pd.DataFrame(columns=["주", "존", "분"])
+    d["주"] = d["WorkoutDate"].dt.to_period("W-SUN").apply(
+        lambda p: p.start_time.strftime("%Y-%m-%d"))
+    g = (d.groupby(["주", "존"], as_index=False)["DurationMinutes"].sum()
+           .rename(columns={"DurationMinutes": "분"}))
+    keep = sorted(g["주"].unique())[-weeks:]
+    return g[g["주"].isin(keep)]
+
+
+def zone_pace_trend(zoned: pd.DataFrame, zone_name: str, days: int = 365) -> pd.DataFrame:
+    """특정 존의 페이스 추이 — 같은 존 심박에서 점점 빨라지는지 확인."""
+    d = _recent(zoned, days)
+    if d.empty:
+        return pd.DataFrame()
+    sub = d[(d["존"] == zone_name) & d["PaceSec"].notna()][
+        ["WorkoutDate", "PaceSec", "AvgHeartRate", "DistanceKm"]].copy()
+    if sub.empty:
+        return sub
+    sub["페이스(분/km)"] = sub["PaceSec"] / 60.0
+    sub["추세"] = sub["페이스(분/km)"].rolling(4, min_periods=1).mean()
+    return sub
 
 
 # ---------------------------------------------------------------------------
