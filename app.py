@@ -6,6 +6,7 @@ Running Life OS — 개인 러닝 관리·분석 시스템
 """
 
 import hashlib
+import re
 import uuid
 from datetime import datetime, timedelta, date
 
@@ -123,7 +124,8 @@ def alt_base(df: pd.DataFrame):
 # ═══════════════════════════════════════════════════════════════════════════
 def record_editor(sheet: str, id_col: str, label_fn, fields, key: str,
                   derive=None, title: str = "✏️ 수정 / 삭제",
-                  row_filter=None, empty_msg: str | None = None) -> None:
+                  row_filter=None, empty_msg: str | None = None,
+                  default_open: bool = False, note: str | None = None) -> None:
     df = db.load_data(sheet)          # 저장/삭제는 항상 전체 df 기준 (다른 행 유실 방지)
     if df.empty:
         return
@@ -135,7 +137,9 @@ def record_editor(sheet: str, id_col: str, label_fn, fields, key: str,
         return
     with ui.card(f"ed_{key}"):
         # 저장 직후에도 펼쳐진 상태를 유지 (매번 다시 여는 번거로움 방지)
-        with st.expander(title, expanded=st.session_state.get(f"exp_{key}", False)):
+        with st.expander(title, expanded=st.session_state.get(f"exp_{key}", default_open)):
+            if note:
+                st.caption(note)
             opts, seen = {}, set()
             for _, r in view.iloc[::-1].iterrows():
                 lab = label_fn(r)
@@ -161,8 +165,9 @@ def record_editor(sheet: str, id_col: str, label_fn, fields, key: str,
                     c = cs[i % len(cs)] if typ != "area" else st
                     cur = row.get(col, "")
                     if typ in ("num", "numopt"):
+                        # %g → 162.00이 아니라 162로, 85.5는 85.5 그대로 보입니다
                         vals[col] = c.number_input(label, value=fnum(cur), step=1.0,
-                                                   key=f"{wk}_{col}")
+                                                   format="%g", key=f"{wk}_{col}")
                     elif typ == "date":
                         try:
                             dv = pd.to_datetime(cur).date()
@@ -229,33 +234,63 @@ def record_editor(sheet: str, id_col: str, label_fn, fields, key: str,
 # ── Metrics 시트는 두 종류의 행을 함께 담습니다 ───────────────────────────
 #   ① 프로필 기준값 행 : LTHR·심박·체중 — 분석의 "기준"이라 과거 계산까지 바뀝니다
 #   ② 가민 측정 기록 행 : VO2max·Endurance·Hill·Load Focus·예측 — 그냥 추이만 봅니다
-# 두 탭이 서로의 행을 지우지 못하도록, 아래 판정으로 목록을 나눠 보여줍니다.
+# 각 탭의 수정/삭제 목록은 '그 탭이 다루는 값이 들어있는 행'만 보여줍니다.
 METRIC_MEASURE_COLS = ["VO2Max", "FitnessAge", "EnduranceScore", "HillScore",
                        "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
                        "Pred5K", "Pred10K", "PredHalf", "PredFull", "LTPace"]
+METRIC_PROFILE_COLS = ["LTHR", "HRRest", "HRMax", "WeightKg", "BodyFatPct"]
 PROFILE_ROW_NOTE = "프로필 변경"
 
 
-def is_profile_row(df: pd.DataFrame) -> pd.Series:
-    """가민 측정값이 하나도 없는 행 = 프로필 기준값 행."""
+_BLANKS = ["", "nan", "none", "nat", "<na>", "0", "0.0", "-", "—"]
+
+
+def vtxt(v, fmt: str = "{}", dash: str = "—") -> str:
+    """표시용 — 빈 값/NaN/0이면 대시."""
+    if v is None:
+        return dash
+    sv = str(v).strip().lower()
+    if sv in _BLANKS:
+        return dash
+    try:
+        return fmt.format(float(v))
+    except (ValueError, TypeError):
+        return str(v)
+
+
+
+def _has_any(df: pd.DataFrame, cols: list[str]) -> pd.Series:
+    """지정한 컬럼 중 실제 값이 들어있는 행 = True.
+    주의: pandas의 .str 접근자는 NaN을 그대로 통과시키므로 반드시 fillna 해야 합니다."""
+    out = pd.Series(False, index=df.index)
+    for c in cols:
+        if c in df.columns:
+            v = df[c].astype(str).str.strip().str.lower().fillna("")
+            out |= ~v.isin(_BLANKS)
+    return out
+
+
+def has_measure_values(df: pd.DataFrame) -> pd.Series:
+    """가민 측정값(VO2max·점수·예측 등)이 들어있는 행."""
+    return _has_any(df, METRIC_MEASURE_COLS) if not df.empty else pd.Series(dtype=bool)
+
+
+def has_profile_values(df: pd.DataFrame) -> pd.Series:
+    """기준값(LTHR·심박·체중·체지방)이 들어있는 행 — 프로필 이력에 반영되는 행.
+    예전에 가민 탭에서 함께 입력한 행도 여기 포함됩니다(실제로 이력에 쓰이니까)."""
     if df.empty:
         return pd.Series(dtype=bool)
-    has_measure = pd.Series(False, index=df.index)
-    for c in METRIC_MEASURE_COLS:
-        if c in df.columns:
-            v = df[c].astype(str).str.strip().str.lower()
-            has_measure |= ~v.isin(["", "nan", "none", "0", "0.0"])
-    note = (df["Notes"].astype(str).str.strip() if "Notes" in df.columns
+    note = (df["Notes"].astype(str).str.strip().fillna("") if "Notes" in df.columns
             else pd.Series("", index=df.index))
-    return (~has_measure) | note.eq(PROFILE_ROW_NOTE)
+    return _has_any(df, METRIC_PROFILE_COLS) | note.eq(PROFILE_ROW_NOTE)
 
 
 def only_profile_rows(df: pd.DataFrame) -> pd.DataFrame:
-    return df[is_profile_row(df)]
+    return df[has_profile_values(df)]
 
 
 def only_measure_rows(df: pd.DataFrame) -> pd.DataFrame:
-    return df[~is_profile_row(df)]
+    return df[has_measure_values(df)]
 
 
 RACE_DIST_KM = {"5km": 5.0, "10km": 10.0, "Half Marathon": 21.0975, "Full Marathon": 42.195}
@@ -1502,10 +1537,11 @@ with tab_work:
             "AvgHeartRate":    ["평균 심박 bpm", "평균 심박수", "평균 심박", "avg hr"],
             "MaxHeartRate":    ["최대심박 bpm", "최대 심박수", "최대심박", "max hr"],
             "AvgPower":        ["평균 파워 w", "평균 파워", "avg power"],
-            "AvgCadence":      ["평균 달리기 케이던스 보/분", "평균 케이던스", "avg run cadence"],
+            "AvgCadence":      ["평균 달리기 케이던스", "평균 달리기 케이던스 보/분",
+                                "평균 케이던스", "avg run cadence"],
             "ElevGainM":       ["총 상승 m", "총 상승", "상승"],
             "ElevLossM":       ["총 하강 m", "총 하강", "하강"],
-            "AvgGCTms":        ["평균 지면 접촉 시간 ms", "지면 접촉"],
+            "AvgGCTms":        ["평균 지면 접촉 시간", "평균 지면 접촉 시간 ms", "지면 접촉"],
             "AvgStrideM":      ["평균 보폭 m", "평균 보폭"],
             "AvgVertOscCm":    ["평균 수직 진동 cm", "수직 진동"],
             "AvgVertRatioPct": ["평균 수직 비율 %", "수직 비율"],
@@ -1579,8 +1615,8 @@ with tab_work:
                     cand = list(raw.columns)
                     col = {k: pick(cand, v) for k, v in GARMIN_MAP.items()}
                     date_col = pick(cand, ["날짜", "date", "활동 날짜", "시작 시간"])
-                    first = str(cand[0]).strip().lower()
-                    is_lap = (first in ("랩", "lap", "구간", "인터벌")) and not date_col
+                    lapcol0 = pick(cand, ["랩", "lap", "구간"])
+                    is_lap = bool(lapcol0) and not date_col
 
                     kind = st.radio(
                         "파일 종류", ["랩(구간) — 훈련 1건", "활동 목록 — 여러 훈련"],
@@ -1618,10 +1654,41 @@ with tab_work:
 
                     # ══════════════════ 랩(구간) 파일 ══════════════════
                     if kind.startswith("랩"):
-                        lapcol = cand[0]
-                        is_sum = raw[lapcol].astype(str).str.strip().str.lower().isin(SUMMARY_LABELS)
+                        lapcol = pick(cand, ["랩", "lap", "구간"]) or cand[0]
+                        stagecol = pick(cand, ["단계 유형", "단계유형", "stage type",
+                                               "intervals type"])
+                        intvcol = pick(cand, ["인터벌", "interval"])
+
+                        def _txt(r, c):
+                            return "" if not c else str(r.get(c, "")).strip()
+
+                        def _lapno(v):
+                            """'3' → 3 · '3 - 6'(구간 합계) 나 '--' → None"""
+                            m = re.fullmatch(r"\s*([0-9]+)(\.0)?\s*", str(v))
+                            return int(m.group(1)) if m else None
+
+                        # 요약 행: 랩 또는 인터벌 칸이 '요약/합계/--'
+                        def _is_sum_row(r):
+                            for c in (lapcol, intvcol):
+                                t = _txt(r, c).lower()
+                                if t in SUMMARY_LABELS or t == "--":
+                                    return True
+                            return False
+
+                        is_sum = raw.apply(_is_sum_row, axis=1)
                         summary_row = raw[is_sum].iloc[0] if is_sum.any() else None
-                        lap_rows = raw[~is_sum]
+                        nos = raw[lapcol].apply(_lapno)
+                        # '1 - 2' 같은 구간 합계 행은 개별 랩과 중복이므로 제외
+                        n_group = int(((~is_sum) & nos.isna()).sum())
+                        lap_rows = raw[(~is_sum) & nos.notna()]
+                        seq_no = False
+                        if lap_rows.empty:            # 랩 번호가 없는 형식이면 순번 부여
+                            lap_rows, n_group, seq_no = raw[~is_sum], 0, True
+
+                        # 가민 '단계 유형'이 여러 종류면 그대로 역할로 씁니다
+                        stages = ({str(v).strip() for v in lap_rows[stagecol].dropna()}
+                                  if stagecol else set())
+                        use_stage = len(stages) > 1
 
                         laps = []
                         for i, (_, r) in enumerate(lap_rows.iterrows()):
@@ -1629,8 +1696,10 @@ with tab_work:
                             d_, t_ = v.get("DistanceKm", np.nan), v.get("DurationMinutes", np.nan)
                             if not (np.isfinite(d_) and d_ > 0 and np.isfinite(t_) and t_ > 0):
                                 continue
-                            v["LapNo"] = i + 1
+                            v["LapNo"] = (i + 1) if seq_no else _lapno(r[lapcol])
                             v["PaceSec"] = round(t_ * 60 / d_, 1)
+                            v["LapRole"] = (ana.stage_to_role(_txt(r, stagecol))
+                                            if use_stage else "")
                             laps.append(v)
                         L = pd.DataFrame(laps)
 
@@ -1673,6 +1742,12 @@ with tab_work:
                                 f"**합산 결과** — 유효 랩 **{len(L)}개**를 훈련 1건으로 저장합니다"
                                 + (" *(합계는 CSV의 ‘요약’ 행 사용)*" if summary_row is not None
                                    else " *(랩을 직접 더함)*"))
+                            if n_group:
+                                st.caption(f"‘1 - 2’처럼 여러 랩을 묶은 **구간 합계 행 {n_group}개**는 "
+                                           "개별 랩과 중복이라 제외했습니다.")
+                            if "LapRole" in L.columns and L["LapRole"].astype(str).str.len().sum():
+                                st.caption("CSV의 **단계 유형**(워밍업/러닝/쿨다운)을 랩 역할로 "
+                                           "그대로 가져왔습니다 — 추측하지 않습니다.")
                             ui.metrics([
                                 ("총 거리", f"{tot_d:.2f} km", None),
                                 ("총 시간", ana.time_str(tot_m * 60), None),
@@ -1694,6 +1769,7 @@ with tab_work:
                             with st.expander(f"저장될 랩 {len(L)}개 전체 보기"):
                                 prev = pd.DataFrame({
                                     "랩": L["LapNo"],
+                                    "역할": L.get("LapRole", ""),
                                     "거리(km)": L["DistanceKm"].round(2),
                                     "시간": L["DurationMinutes"].apply(
                                         lambda v: ana.time_str(v * 60)),
@@ -2082,6 +2158,9 @@ with tab_admin:
             ui.head("👤 프로필 & 기준값",
                     "심박·체중은 <b>모든 분석의 기준</b>입니다 — 바꾸면 그 시점부터 "
                     "심박존·훈련 부하가 다시 계산됩니다")
+            st.caption("아래 칸에는 **현재 값**이 채워져 있습니다. 고쳐서 저장하면 그게 수정이고, "
+                       "값이 실제로 달라졌을 때만 **적용일** 날짜로 이력이 한 줄 쌓입니다. "
+                       "쌓인 이력은 이 아래 **기준값 이력 수정 / 삭제**에서 고치거나 지웁니다.")
             with st.form("f_ath"):
                 eff = st.date_input("적용일", date.today(), key="prof_eff",
                                     help="이 날짜부터 아래 값이 적용됩니다. "
@@ -2180,6 +2259,25 @@ with tab_admin:
                                  width="stretch", hide_index=True)
                 st.caption("잘못 입력한 이력은 아래 **✏️ 기준값 이력 수정 / 삭제**에서 고칩니다.")
 
+        record_editor(
+            "Metrics", "MetricID",
+            lambda r: (f"{str(r['MetricDate'])[:10]} · LTHR {vtxt(r.get('LTHR'), '{:.0f}')}"
+                       f" · 체중 {vtxt(r.get('WeightKg'), '{:.1f}')}kg"),
+            [("MetricDate", "date", "적용일", None),
+             ("LTHR", "numopt", "LTHR", None),
+             ("HRRest", "numopt", "안정시 심박", None),
+             ("HRMax", "numopt", "최대 심박", None),
+             ("WeightKg", "numopt", "체중 (kg)", None),
+             ("BodyFatPct", "numopt", "체지방률 (%)", None),
+             ("Notes", "area", "메모", None)],
+            key="profmet", title="✏️ 기준값 이력 수정 / 삭제",
+            row_filter=only_profile_rows, default_open=True,
+            note="위 표의 각 줄을 여기서 고치거나 지웁니다. "
+                 "예전에 ‘가민 측정 기록’ 탭에서 LTHR·체중을 함께 입력한 줄도 "
+                 "이력에 쓰이므로 여기 같이 나옵니다 — 그 줄을 삭제하면 같은 줄의 "
+                 "가민 값(VO₂max 등)도 함께 사라집니다.",
+            empty_msg="아직 기준값 이력이 없습니다. 위에서 적용일과 함께 저장하면 생깁니다.")
+
         if not chg_p.empty:
             pc = ui.cols(2, 1)
             prof_charts = [("WeightKg", "체중 (kg)", "#2563eb", ".1f", 0.1),
@@ -2202,21 +2300,6 @@ with tab_admin:
                             ).properties(height=ui.chart_height(190, 170)), width="stretch")
                         else:
                             st.caption("데이터 없음")
-
-        record_editor(
-            "Metrics", "MetricID",
-            lambda r: (f"{str(r['MetricDate'])[:10]} · LTHR {r.get('LTHR','') or '—'}"
-                       f" · {r.get('WeightKg','') or '—'}kg"),
-            [("MetricDate", "date", "적용일", None),
-             ("LTHR", "numopt", "LTHR", None),
-             ("HRRest", "numopt", "안정시 심박", None),
-             ("HRMax", "numopt", "최대 심박", None),
-             ("WeightKg", "numopt", "체중 (kg)", None),
-             ("BodyFatPct", "numopt", "체지방률 (%)", None),
-             ("Notes", "area", "메모", None)],
-            key="profmet", title="✏️ 기준값 이력 수정 / 삭제",
-            row_filter=only_profile_rows,
-            empty_msg="아직 기준값 이력이 없습니다. 위에서 적용일과 함께 저장하면 생깁니다.")
 
     with a2:
         with ui.card("gdaily"):
@@ -2395,7 +2478,7 @@ with tab_admin:
 
         record_editor(
             "Metrics", "MetricID",
-            lambda r: f"{str(r['MetricDate'])[:10]} · VO₂max {r.get('VO2Max','') or '—'}",
+            lambda r: f"{str(r['MetricDate'])[:10]} · VO₂max {vtxt(r.get('VO2Max'), '{:.1f}')}",
             [("MetricDate", "date", "측정일", None),
              ("VO2Max", "numopt", "VO₂max", None),
              ("FitnessAge", "numopt", "피트니스 나이", None),
@@ -2409,14 +2492,11 @@ with tab_admin:
              ("PredHalf", "text", "예측 Half", None),
              ("PredFull", "text", "예측 Full", None),
              ("LTPace", "text", "LT 페이스", None),
-             # 아래 3개는 예전에 이 탭에서 입력하던 항목입니다. 새 입력은 프로필 탭에서
-             # 하지만, 이미 저장된 값을 고칠 수 있도록 수정 화면에는 남겨둡니다.
-             ("LTHR", "numopt", "LTHR (이전 입력분)", None),
-             ("WeightKg", "numopt", "체중 kg (이전 입력분)", None),
-             ("BodyFatPct", "numopt", "체지방률 % (이전 입력분)", None),
              ("Notes", "area", "메모", None)],
             key="metric", title="✏️ 측정 기록 수정 / 삭제",
             row_filter=only_measure_rows,
+            note="LTHR·체중·체지방률은 ‘👤 프로필 & 기준값’ 탭의 "
+                 "**기준값 이력 수정 / 삭제**에서 고칩니다.",
             empty_msg="아직 가민 측정 기록이 없습니다.")
 
     with a4:
