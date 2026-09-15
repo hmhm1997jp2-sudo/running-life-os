@@ -1239,6 +1239,22 @@ def decoupling_verdict(pct: float) -> tuple[str, str]:
 
 LAP_ROLES = ["워밍업", "반복", "회복", "쿨다운", "지속주", "자투리"]
 
+# 가민 CSV의 '단계 유형' → 이 앱의 랩 역할
+_STAGE_ROLE = {
+    "워밍업": "워밍업", "웜업": "워밍업", "warmup": "워밍업", "warm up": "워밍업",
+    "러닝": "반복", "run": "반복", "인터벌": "반복", "interval": "반복",
+    "활성": "반복", "active": "반복", "반복": "반복",
+    "회복": "회복", "리커버리": "회복", "recovery": "회복",
+    "휴식": "회복", "rest": "회복", "recover": "회복",
+    "쿨다운": "쿨다운", "쿨 다운": "쿨다운", "cooldown": "쿨다운", "cool down": "쿨다운",
+}
+
+
+def stage_to_role(stage) -> str:
+    """가민 '단계 유형' 문자열을 랩 역할로. 모르는 값이면 빈 문자열."""
+    t = str(stage or "").strip().lower()
+    return _STAGE_ROLE.get(t, "")
+
 
 def classify_laps(lap_rows: pd.DataFrame, fast_ratio: float = 1.06) -> pd.DataFrame:
     """
@@ -1264,6 +1280,17 @@ def classify_laps(lap_rows: pd.DataFrame, fast_ratio: float = 1.06) -> pd.DataFr
     core = d[~trivial]
     d["역할"] = ""
     d.loc[trivial, "역할"] = "자투리"
+
+    # 가민이 알려준 단계 유형(LapRole)이 저장돼 있으면 추측하지 않고 그대로 씁니다
+    if "LapRole" in d.columns:
+        saved = d["LapRole"].map(lambda v: _STAGE_ROLE.get(str(v).strip().lower(),
+                                                           str(v).strip()
+                                                           if str(v).strip() in LAP_ROLES
+                                                           else ""))
+        if saved.replace("", pd.NA).notna().sum() >= max(2, int(len(d) * 0.5)):
+            d.loc[(d["역할"] == "") & saved.ne(""), "역할"] = saved
+            d.loc[d["역할"] == "", "역할"] = "지속주"
+            return d
     if core.empty:
         d.loc[d["역할"] == "", "역할"] = "지속주"
         return d
