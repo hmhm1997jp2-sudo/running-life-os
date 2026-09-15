@@ -35,16 +35,17 @@ _REQUIRED = {
                           "decoupling_verdict", "detect_prs", "effective_vo2max",
                           "efficiency_factor", "endurance_meta", "garmin_alerts",
                           "garmin_race_predictions", "garmin_vs_computed", "hill_meta",
-                          "intensity_distribution", "interval_shape", "lap_role_summary",
-                          "latest_garmin", "load_focus", "load_ratio_meta", "load_summary",
-                          "pace_str", "parse_time_str", "predict_time", "prepare_workouts",
-                          "profile_changes", "profile_history", "race_plan", "recovery_meta",
-                          "resolve_lthr", "stage_to_role", "status_meta", "time_str",
-                          "training_paces", "vdot_from_performance", "weekly_summary",
-                          "zone_bounds", "zone_history", "zone_pace_trend", "zone_segments",
-                          "zone_table"]),
-    "ui.py":        (ui, ["bar", "boot", "card", "chart_height", "cols", "head", "is_mobile",
-                          "item_list", "metrics", "mode_switch", "pill", "rows"]),
+                          "intensity_distribution", "interval_shape", "lap_best_efforts",
+                          "lap_role_summary", "latest_garmin", "load_focus", "load_ratio_meta",
+                          "load_summary", "pace_str", "parse_time_str", "predict_time",
+                          "prepare_workouts", "profile_changes", "profile_history",
+                          "race_plan", "recovery_meta", "resolve_lthr", "stage_to_role",
+                          "status_meta", "time_str", "training_paces", "vdot_from_performance",
+                          "weekly_summary", "zone_bounds", "zone_history", "zone_pace_trend",
+                          "zone_segments", "zone_table"]),
+    "ui.py":        (ui, ["bar", "boot", "card", "chart_height", "cols", "head", "hero",
+                          "is_dark", "is_mobile", "item_list", "metrics", "mode_switch",
+                          "pill", "rows", "tiles"]),
     "db.py":        (db, ["append_rows", "backend_name", "diagnose", "export_excel_bytes",
                           "get_athlete", "init_db", "load_data", "repair", "repair_preview",
                           "reset_db", "save_athlete", "write_sheet"]),
@@ -66,6 +67,90 @@ if _stale:
     st.stop()
 
 ui.boot()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 차트 공통 스타일 — 모든 Altair 차트에 한 번에 적용됩니다.
+#   · 테두리·눈금선 제거, 가로 점선 그리드만 남김 (요즘 대시보드 스타일)
+#   · Pretendard 적용, 막대 모서리 둥글게, 범례는 위쪽 가로 배치
+# ═══════════════════════════════════════════════════════════════════════════
+CHART_FONT = ('"Pretendard Variable", Pretendard, -apple-system, "Segoe UI", '
+              'Roboto, "Malgun Gothic", sans-serif')
+
+# ── 색 팔레트 ────────────────────────────────────────────────────────────
+# 채도를 한 단계 낮춘 색만 씁니다. 원색(#ef4444, #2563eb …)을 섞으면
+# 화면이 촌스러워지고 다크모드에서 눈이 아픕니다.
+C = {
+    "primary": "#4c6ef5",   # 인디고 — 기본선·막대
+    "accent":  "#fa8c5c",   # 코랄  — 두 번째 계열(이동평균·비교선)
+    "teal":    "#12b886",
+    "violet":  "#9775fa",
+    "cyan":    "#22b8cf",
+    "pink":    "#f06595",
+    "amber":   "#fab005",
+    "slate":   "#9aa4b4",   # 중립(자투리·참고선)
+    "pale":    "#eceff7",   # 그라데이션 시작
+}
+CHART_PALETTE = [C["primary"], C["accent"], C["teal"], C["violet"],
+                 C["cyan"], C["pink"], C["amber"], C["slate"]]
+
+
+def ramp(n: int, lo: str = None, hi: str = None) -> list[str]:
+    """lo → hi 로 부드럽게 이어지는 n개 색. 기본은 옅은 회청 → 인디고."""
+    lo, hi = lo or C["pale"], hi or C["primary"]
+
+    def _rgb(h):
+        h = h.lstrip("#")
+        return [int(h[i:i + 2], 16) for i in (0, 2, 4)]
+    a, b = _rgb(lo), _rgb(hi)
+    if n <= 1:
+        return [hi]
+    return ["#%02x%02x%02x" % tuple(
+        round(a[k] + (b[k] - a[k]) * i / (n - 1)) for k in range(3))
+        for i in range(n)]
+
+
+def chart_theme():
+    dark = ui.is_dark()
+    muted = "#6e7787" if dark else "#8a93a1"
+    grid = "rgba(255,255,255,.07)" if dark else "rgba(20,24,31,.07)"
+    text = "#e8ecf3" if dark else "#14181f"
+    return {"config": {
+        "font": CHART_FONT,
+        "background": "transparent",
+        "view": {"stroke": None},
+        "padding": {"left": 2, "right": 6, "top": 6, "bottom": 2},
+        "axis": {"labelFont": CHART_FONT, "titleFont": CHART_FONT,
+                 "labelColor": muted, "titleColor": muted,
+                 "labelFontSize": 11, "titleFontSize": 11, "titleFontWeight": 600,
+                 "domain": False, "ticks": False, "labelPadding": 7, "titlePadding": 10,
+                 "gridColor": grid, "gridDash": [2, 4], "gridWidth": 1,
+                 "labelOverlap": "greedy"},
+        "axisX": {"grid": False},
+        "legend": {"labelFont": CHART_FONT, "titleFont": CHART_FONT,
+                   "labelColor": muted, "titleColor": muted,
+                   "labelFontSize": 11, "titleFontSize": 11,
+                   "symbolType": "circle", "symbolSize": 70,
+                   "orient": "top", "direction": "horizontal",
+                   "offset": 4, "padding": 0, "titlePadding": 0},
+        "bar": {"cornerRadiusEnd": 4},
+        "line": {"strokeWidth": 2.4, "strokeCap": "round", "strokeJoin": "round"},
+        "point": {"size": 58, "filled": True},
+        "rule": {"strokeWidth": 1.4},
+        "text": {"font": CHART_FONT, "fontSize": 11, "color": text},
+        "title": {"font": CHART_FONT, "fontSize": 13, "anchor": "start", "color": text},
+        "range": {"category": CHART_PALETTE},
+    }}
+
+
+try:                                     # Altair 5.5+
+    alt.theme.register("running_life_os", enable=True)(chart_theme)
+except Exception:                        # 구버전 호환
+    try:
+        alt.themes.register("running_life_os", chart_theme)
+        alt.themes.enable("running_life_os")
+    except Exception:
+        pass
 
 WORKOUT_TYPES = ["Easy", "Recovery", "LSD", "Tempo", "Threshold",
                  "Interval", "Sprint", "Race", "Cross Training"]
@@ -312,11 +397,54 @@ def only_measure_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df[has_measure_values(df)]
 
 
-# 날짜 축 — 하루보다 촘촘한 눈금(‘12 PM’)이 생기지 않게 최소 간격을 강제합니다.
-_DAY_MS = 86400000
-
+# 날짜 축 — 하루보다 촘촘한 눈금('12 PM')이나 같은 날짜 반복이 생기지 않게 합니다.
 # 차트 기간 선택 (None = 전체)
 RANGE_DAYS = {"2주": 14, "1개월": 30, "3개월": 90, "6개월": 180, "1년": 365, "전체": None}
+
+
+WD_KR = ["월", "화", "수", "목", "금", "토", "일"]
+
+DECOUPLING_HELP = """
+**심박 디커플링 (Pa:HR)** — 훈련 **전반부와 후반부**의 ‘페이스 대비 심박 효율’을
+비교한 값입니다. 후반부 효율이 얼마나 떨어졌는지를 %로 나타냅니다.
+
+- 같은 페이스인데 후반에 **심박이 올라갔거나**, 같은 심박인데 후반에 **느려졌으면** ＋
+- 후반이 더 효율적이었으면 －
+
+**읽는 법**
+
+- **＋5% 이내** — 유산소 지구력이 그 강도를 감당하고 있습니다. 좋은 신호입니다.
+- **＋5 ~ 10%** — 경계. 그 페이스가 아직 살짝 버겁다는 뜻입니다.
+- **＋10% 초과** — 지구력 부족, 초반 오버페이스, 더위·탈수·연료 부족 중 하나입니다.
+  롱런에서 자주 나오면 **초반을 더 천천히** 가는 게 정답입니다.
+- **－(마이너스)** — 후반이 더 좋았다는 뜻. 워밍업이 부족했거나 네거티브 스플릿입니다.
+
+**주의** — LSD·이지런처럼 **강도가 일정한 훈련**에서만 의미가 있습니다.
+인터벌처럼 강약이 반복되면 해석이 어렵고, 언덕·더위·바람도 값을 키웁니다.
+"""
+
+
+def period_range(anchor_day, unit: str):
+    """기준 날짜가 속한 기간의 (시작일, 종료일). '전체'면 (None, None)."""
+    if unit == "전체" or anchor_day is None:
+        return None, None
+    if unit == "월":
+        start = anchor_day.replace(day=1)
+        nxt = (start + timedelta(days=32)).replace(day=1)
+        return start, nxt - timedelta(days=1)
+    start = anchor_day - timedelta(days=anchor_day.weekday())   # 월요일
+    return start, start + timedelta(days=6)
+
+
+def period_shift(anchor_day, unit: str, n: int):
+    """기준 날짜를 한 기간 앞/뒤로 옮깁니다."""
+    if unit == "월":
+        first = anchor_day.replace(day=1)
+        for _ in range(abs(n)):
+            first = ((first + timedelta(days=32)).replace(day=1) if n > 0
+                     else (first - timedelta(days=1)).replace(day=1))
+        return first
+    return anchor_day + timedelta(days=7 * n)
 
 
 def _span_days(sr) -> int:
@@ -329,21 +457,31 @@ def _span_days(sr) -> int:
 
 
 def date_axis(n_days: int, title=None):
-    """구간 길이에 맞춰 날짜 눈금 형식·간격을 고릅니다."""
-    if n_days <= 45:
-        return alt.Axis(title=title, format="%m/%d", tickMinStep=_DAY_MS)
-    if n_days <= 150:
-        return alt.Axis(title=title, format="%m/%d", tickMinStep=_DAY_MS * 7)
-    if n_days <= 400:
-        return alt.Axis(title=title, format="%Y/%m", tickMinStep=_DAY_MS * 28)
-    return alt.Axis(title=title, format="%Y/%m", tickMinStep=_DAY_MS * 90)
+    """구간 길이에 맞춰 날짜 눈금 형식·간격을 고릅니다.
+    tickMinStep은 시간 축에서 무시되는 경우가 있어 tickCount에 '일/주/월' 간격을
+    직접 지정합니다. 이렇게 해야 '09/14, 09/14, 09/15'처럼 같은 날짜가 두 번
+    찍히는 일이 없습니다."""
+    n = max(int(n_days or 1), 1)
+    if n <= 45:                       # 일 단위
+        step = max(1, round(n / 12))
+        return alt.Axis(title=title, format="%m/%d",
+                        tickCount={"interval": "day", "step": step})
+    if n <= 180:                      # 주 단위
+        step = max(1, round(n / 7 / 12))
+        return alt.Axis(title=title, format="%m/%d",
+                        tickCount={"interval": "week", "step": step})
+    if n <= 400:                      # 월 단위
+        return alt.Axis(title=title, format="%Y/%m",
+                        tickCount={"interval": "month", "step": 1})
+    return alt.Axis(title=title, format="%Y/%m",
+                    tickCount={"interval": "month", "step": 3})
 
 
 RACE_DIST_KM = {"5km": 5.0, "10km": 10.0, "Half Marathon": 21.0975, "Full Marathon": 42.195}
 
 
 # 존 색상 — 모든 차트에서 동일하게 유지 (Z1 연회색 → Z5 빨강)
-ZONE_COLORS = ["#cbd5e1", "#60a5fa", "#34d399", "#fbbf24", "#ef4444"]
+ZONE_COLORS = ["#cfd6e2", "#7aa2f7", "#41c3a0", "#f2b03d", "#ec6a5e"]
 
 
 def tier_help_html(meta: dict, intro: str, note: str) -> str:
@@ -375,7 +513,7 @@ def zone_order(model: str) -> list[str]:
 
 
 def zone_scale(model: str):
-    return alt.Scale(domain=zone_order(model), range=ZONE_COLORS + ["#eef2f7"])
+    return alt.Scale(domain=zone_order(model), range=ZONE_COLORS + [C["pale"]])
 
 
 def zone_bar_html(bounds, model: str) -> str:
@@ -594,6 +732,43 @@ with tab_dash:
         d = G.get(key + "_date")
         return f"{d:%m/%d} 입력" if d is not None and pd.notna(d) else "미입력"
 
+    def hist_series(df, datecol, col, n=30):
+        """타일 스파크라인용 최근 값 목록."""
+        if df is None or df.empty or col not in df.columns:
+            return []
+        t = df[[datecol, col]].copy()
+        t[datecol] = pd.to_datetime(t[datecol], errors="coerce")
+        t[col] = pd.to_numeric(t[col], errors="coerce")
+        t = t.dropna().sort_values(datecol).tail(n)
+        return [float(x) for x in t[col]]
+
+    def section(label: str, right: str = ""):
+        st.markdown(
+            f"<div style='display:flex;justify-content:space-between;align-items:baseline;"
+            f"margin:18px 2px 8px'><span style='font-size:.72rem;font-weight:700;"
+            f"letter-spacing:.08em;text-transform:uppercase;color:var(--text-3)'>{label}</span>"
+            f"<span style='font-size:.72rem;color:var(--text-3)'>{right}</span></div>",
+            unsafe_allow_html=True)
+
+    # ─────────────────────────────────────────────────────────────────
+    # 히어로 — 오늘 상태
+    # ─────────────────────────────────────────────────────────────────
+    tone, kr, desc = ana.status_meta(G.get("TrainingStatus"))
+    lr_tone, lr_txt = ana.load_ratio_meta(G.get("LoadRatio"))
+    rc_tone, rc_txt = ana.recovery_meta(G.get("RecoveryTimeHr"))
+    hrv_status = str(G.get("HRVStatus") or "")
+    hrv_tone = {"Balanced": "ok", "Unbalanced": "warn",
+                "Low": "bad", "Poor": "bad"}.get(hrv_status, "")
+
+    ui.hero(
+        kr,
+        ui.pill(str(G.get("TrainingStatus") or "No Status"), tone),
+        desc,
+        facts=[("TSB 폼", summary["tsb"] if summary else "—"),
+               ("회복", gv("RecoveryTimeHr", "{:.0f}", "h")),
+               ("안정시 심박", gv("RestingHR", "{:.0f}", " bpm")),
+               ("입력", gdate("TrainingStatus"))])
+
     alerts = ana.garmin_alerts(G) + ana.build_alerts(df_w, df_shoes, daily, weekly, inten)
     if alerts:
         with ui.card("alerts"):
@@ -602,79 +777,69 @@ with tab_dash:
                 getattr(st, a["level"])(a["msg"])
 
     # ─────────────────────────────────────────────────────────────────
-    # 가민 · 트레이닝 상태 (히어로)
+    # 타일 — 부하 / 컨디션 / 기량
     # ─────────────────────────────────────────────────────────────────
-    with ui.card("gstatus"):
-        tone, kr, desc = ana.status_meta(G.get("TrainingStatus"))
-        ui.head("⌚ 가민 트레이닝 상태", gdate("TrainingStatus"))
-        st.markdown(
-            f"<div style='display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px'>"
-            f"<span style='font-size:1.9rem;font-weight:750;letter-spacing:-.02em'>{kr}</span>"
-            f"{ui.pill(str(G.get('TrainingStatus') or 'No Status'), tone)}</div>"
-            f"<p class='rl-sub' style='margin-bottom:14px'>{desc}</p>",
-            unsafe_allow_html=True)
+    section("가민 · 트레이닝 부하", gdate("AcuteLoad"))
+    ui.tiles([
+        {"label": "Acute Load", "value": gv("AcuteLoad", "{:,.0f}"),
+         "spark": hist_series(df_daily, "StatusDate", "AcuteLoad")},
+        {"label": "Load Ratio", "value": gv("LoadRatio", "{:.2f}"),
+         "sub": lr_txt, "tone": lr_tone,
+         "spark": hist_series(df_daily, "StatusDate", "LoadRatio")},
+        {"label": "회복 시간", "value": gv("RecoveryTimeHr", "{:.0f}"), "unit": "시간",
+         "sub": rc_txt, "tone": rc_tone,
+         "spark": hist_series(df_daily, "StatusDate", "RecoveryTimeHr")},
+        {"label": "주간 고강도", "value": gv("IntensityMinutes", "{:,.0f}"), "unit": "분"},
+    ])
 
-        lr_tone, lr_txt = ana.load_ratio_meta(G.get("LoadRatio"))
-        rc_tone, rc_txt = ana.recovery_meta(G.get("RecoveryTimeHr"))
-        ui.metrics([
-            ("Acute Load", gv("AcuteLoad", "{:.0f}"), gdate("AcuteLoad")),
-            ("Load Ratio", gv("LoadRatio", "{:.2f}"), lr_txt),
-            ("회복 시간", gv("RecoveryTimeHr", "{:.0f}", "h"), rc_txt),
-            ("주간 고강도 분", gv("IntensityMinutes", "{:.0f}", "분"), None),
-        ], per_row_pc=4)
+    section("가민 · 컨디션", gdate("BodyBattery"))
+    ui.tiles([
+        {"label": "Body Battery", "value": gv("BodyBattery", "{:.0f}"),
+         "spark": hist_series(df_daily, "StatusDate", "BodyBattery")},
+        {"label": "Readiness", "value": gv("TrainingReadiness", "{:.0f}"),
+         "spark": hist_series(df_daily, "StatusDate", "TrainingReadiness")},
+        {"label": "HRV", "value": gv("HRVms", "{:.0f}"), "unit": "ms",
+         "sub": hrv_status or None, "tone": hrv_tone,
+         "spark": hist_series(df_daily, "StatusDate", "HRVms")},
+        {"label": "수면 점수", "value": gv("SleepScore", "{:.0f}"),
+         "spark": hist_series(df_daily, "StatusDate", "SleepScore")},
+    ])
 
-    # ─────────────────────────────────────────────────────────────────
-    # 가민 · 컨디션 / 기량
-    # ─────────────────────────────────────────────────────────────────
-    c = ui.cols(2, 1)
-    with c[0]:
-        with ui.card("gcond"):
-            ui.head("🔋 가민 컨디션", gdate("BodyBattery"))
-            ui.metrics([
-                ("Body Battery", gv("BodyBattery", "{:.0f}"), None),
-                ("Readiness", gv("TrainingReadiness", "{:.0f}"), None),
-                ("HRV", gv("HRVms", "{:.0f}", " ms"), str(G.get("HRVStatus") or "—")),
-                ("수면 점수", gv("SleepScore", "{:.0f}"), None),
-            ], per_row_pc=4)
-            hrv = str(G.get("HRVStatus") or "")
-            if hrv:
-                t = {"Balanced": "ok", "Unbalanced": "warn", "Low": "bad", "Poor": "bad"}.get(hrv, "info")
-                st.markdown(f"HRV 상태 {ui.pill(hrv, t)} · 안정시 심박 "
-                            f"<b>{gv('RestingHR', '{:.0f}', ' bpm')}</b>", unsafe_allow_html=True)
-
-    with c[1 % len(c)]:
-        with ui.card("gfit"):
-            ui.head("📈 가민 기량", gdate("VO2Max"))
-            em = ana.endurance_meta(G.get("EnduranceScore"), AGE, SEX)
-            hm = ana.hill_meta(G.get("HillScore"))
-            ui.metrics([
-                ("VO₂max", gv("VO2Max", "{:.0f}"), None),
-                ("피트니스 나이", gv("FitnessAge", "{:.0f}"), "세"),
-                ("Endurance", gv("EnduranceScore", "{:,.0f}"), em["kr"]),
-                ("Hill Score", gv("HillScore", "{:.0f}"), hm["kr"]),
-            ], per_row_pc=4)
-            pop = ui.cols(2, 1)
-            with pop[0].popover("ℹ️ Endurance Score 등급"):
-                st.markdown(tier_help_html(
-                    em,
-                    "<b>Endurance Score (지구력 점수)</b> — 심박이 기록된 모든 활동을 "
-                    "누적해서 <i>장시간 버티는 능력</i>을 점수로 매긴 값입니다. "
-                    "VO₂max가 ‘엔진 크기’라면 이건 ‘연료탱크’에 가깝습니다. "
-                    "롱런·저강도 볼륨을 꾸준히 쌓으면 올라가고, 며칠 쉬어도 "
-                    "잘 안 떨어집니다.",
-                    "등급 기준이 나이대·성별마다 다릅니다."), unsafe_allow_html=True)
-            with pop[1 % len(pop)].popover("ℹ️ Hill Score 등급"):
-                st.markdown(tier_help_html(
-                    hm,
-                    "<b>Hill Score (언덕 점수)</b> — <i>오르막 달리기 능력</i>을 1~100으로 "
-                    "매긴 값입니다. <b>경사 2% 이상</b> 구간이 있는 야외 러닝/걷기/하이킹만 "
-                    "집계되고, 최근 2개월 훈련 이력과 VO₂max 추정치를 씁니다. "
-                    "평지나 트레드밀 위주로 뛰면 아예 안 뜨거나 한참 뒤에 생깁니다.",
-                    "나이·성별 구분 없이 같은 기준입니다."), unsafe_allow_html=True)
-            lt = str(G.get("LTPace") or "")
-            if lt or G.get("LTHR"):
-                st.markdown(f"<span class='rl-sub'>젖산역치 {lt or '—'} · "
-                            f"{gv('LTHR', '{:.0f}', ' bpm')}</span>", unsafe_allow_html=True)
+    em = ana.endurance_meta(G.get("EnduranceScore"), AGE, SEX)
+    hm = ana.hill_meta(G.get("HillScore"))
+    lt_txt = str(G.get("LTPace") or "")
+    section("가민 · 기량", gdate("VO2Max"))
+    ui.tiles([
+        {"label": "VO₂max", "value": gv("VO2Max", "{:.1f}"),
+         "sub": (f"젖산역치 {lt_txt}" if lt_txt else None),
+         "spark": hist_series(df_metrics, "MetricDate", "VO2Max")},
+        {"label": "피트니스 나이", "value": gv("FitnessAge", "{:.0f}"), "unit": "세",
+         "spark": hist_series(df_metrics, "MetricDate", "FitnessAge")},
+        {"label": "Endurance", "value": gv("EnduranceScore", "{:,.0f}"),
+         "sub": em["kr"], "tone": em["tone"],
+         "spark": hist_series(df_metrics, "MetricDate", "EnduranceScore")},
+        {"label": "Hill Score", "value": gv("HillScore", "{:.0f}"),
+         "sub": hm["kr"], "tone": hm["tone"],
+         "spark": hist_series(df_metrics, "MetricDate", "HillScore")},
+    ])
+    pop = ui.cols(2, 1)
+    with pop[0].popover("ℹ️ Endurance Score 등급"):
+        st.markdown(tier_help_html(
+            em,
+            "<b>Endurance Score (지구력 점수)</b> — 심박이 기록된 모든 활동을 "
+            "누적해서 <i>장시간 버티는 능력</i>을 점수로 매긴 값입니다. "
+            "VO₂max가 ‘엔진 크기’라면 이건 ‘연료탱크’에 가깝습니다. "
+            "롱런·저강도 볼륨을 꾸준히 쌓으면 올라가고, 며칠 쉬어도 "
+            "잘 안 떨어집니다.",
+            "등급 기준이 나이대·성별마다 다릅니다."), unsafe_allow_html=True)
+    with pop[1 % len(pop)].popover("ℹ️ Hill Score 등급"):
+        st.markdown(tier_help_html(
+            hm,
+            "<b>Hill Score (언덕 점수)</b> — <i>오르막 달리기 능력</i>을 1~100으로 "
+            "매긴 값입니다. <b>경사 2% 이상</b> 구간이 있는 야외 러닝/걷기/하이킹만 "
+            "집계되고, 최근 2개월 훈련 이력과 VO₂max 추정치를 씁니다. "
+            "평지나 트레드밀 위주로 뛰면 아예 안 뜨거나 한참 뒤에 생깁니다.",
+            "나이·성별 구분 없이 같은 기준입니다."), unsafe_allow_html=True)
 
     # ─────────────────────────────────────────────────────────────────
     # 가민 · Load Focus / 레이스 예측
@@ -685,9 +850,9 @@ with tab_dash:
             ui.head("🎚️ 가민 Load Focus", "최근 4주 부하의 성격 분포")
             fo = ana.load_focus(G)
             if fo:
-                labels_fo = [("무산소", "anaerobic", "#ef4444"),
-                             ("고강도 유산소", "high_aerobic", "#f59e0b"),
-                             ("저강도 유산소", "low_aerobic", "#3b82f6")]
+                labels_fo = [("무산소", "anaerobic", C["accent"]),
+                             ("고강도 유산소", "high_aerobic", C["amber"]),
+                             ("저강도 유산소", "low_aerobic", C["primary"])]
                 for name, key, color in labels_fo:
                     p = fo["pct"][key]
                     raw = fo["raw"][key]
@@ -724,13 +889,23 @@ with tab_dash:
         ui.head("📐 계산 지표 (보조)", "TRIMP 기반 부하 모델 · 가민 수치와 별개입니다")
         if summary:
             acwr = summary.get("acwr")
-            ui.metrics([
-                ("CTL 체력", summary["ctl"],
-                 f"{summary['ctl_ramp_7d']:+.1f} / 7일" if summary.get("ctl_ramp_7d") else None),
-                ("ATL 피로", summary["atl"], None),
-                ("TSB 폼", summary["tsb"], summary["form_text"]),
-                ("ACWR", f"{acwr:.2f}" if acwr else "—", summary["risk_text"]),
-            ], per_row_pc=4)
+            _dtail = daily.tail(30)
+            ui.tiles([
+                {"label": "CTL 체력", "value": summary["ctl"], "tone": "info",
+                 "sub": (f"{summary['ctl_ramp_7d']:+.1f} / 7일"
+                         if summary.get("ctl_ramp_7d") else None),
+                 "spark": list(_dtail["CTL"]) if "CTL" in _dtail else []},
+                {"label": "ATL 피로", "value": summary["atl"],
+                 "spark": list(_dtail["ATL"]) if "ATL" in _dtail else []},
+                {"label": "TSB 폼", "value": summary["tsb"], "sub": summary["form_text"],
+                 "tone": ("warn" if fnum(summary["tsb"]) < -30 else
+                          "ok" if fnum(summary["tsb"]) > 0 else ""),
+                 "spark": list(_dtail["TSB"]) if "TSB" in _dtail else []},
+                {"label": "ACWR", "value": f"{acwr:.2f}" if acwr else "—",
+                 "sub": summary["risk_text"],
+                 "tone": ("bad" if acwr and acwr > 1.5 else
+                          "warn" if acwr and acwr < 0.8 else "ok" if acwr else "")},
+            ])
             with st.expander("❓ 용어 설명 — CTL · ATL · TSB · ACWR"):
                 st.markdown(
                     "모두 **TRIMP**(훈련 시간 × 심박 강도로 매기는 1회 훈련 부하 점수)를 "
@@ -752,7 +927,7 @@ with tab_dash:
                     "기록이 4주 이상 쌓여야 숫자가 의미를 갖습니다. "
                     "초반에 CTL이 0점대인 건 아직 데이터가 적어서입니다.")
             with st.expander("🔍 가민 값과 비교해 보기"):
-                prs = ana.detect_prs(df_w)
+                prs = ana.detect_prs(df_w, df_laps=db.load_data("Laps"))
                 vdot = np.nan
                 for nm, dd_ in ana.PR_CATEGORIES:
                     r_ = prs[prs["Category"] == nm]
@@ -781,13 +956,19 @@ with tab_dash:
         if show["CTL"].sum() > 0:
             xax = date_axis(len(show))
             long = show.melt("Date", ["CTL", "ATL"], var_name="지표", value_name="값")
-            area = alt.Chart(show).mark_area(opacity=.16, color="#2563eb").encode(
-                x=alt.X("Date:T", title=None, axis=xax), y=alt.Y("TSB:Q", title="TSB"))
+            area = alt.Chart(show).mark_area(opacity=.15, color=C["primary"]).encode(
+                x=alt.X("Date:T", title=None, axis=xax),
+                y=alt.Y("TSB:Q", title="TSB"),
+                tooltip=[alt.Tooltip("Date:T", title="날짜", format="%Y-%m-%d"),
+                         alt.Tooltip("TSB:Q", title="TSB 폼", format=".1f"),
+                         alt.Tooltip("CTL:Q", title="CTL 체력", format=".1f"),
+                         alt.Tooltip("ATL:Q", title="ATL 피로", format=".1f")])
             line = alt.Chart(long).mark_line(strokeWidth=2).encode(
                 x=alt.X("Date:T", title=None, axis=xax),
                 y=alt.Y("값:Q", title="부하"),
                 color=alt.Color("지표:N", scale=alt.Scale(
-                    domain=["CTL", "ATL"], range=["#2563eb", "#f97316"]), title=None),
+                    domain=["CTL", "ATL"],
+                    range=[C["primary"], C["accent"]]), title=None),
                 tooltip=[alt.Tooltip("Date:T", title="날짜", format="%Y-%m-%d"),
                          "지표:N", alt.Tooltip("값:Q", format=".1f")])
             st.altair_chart(alt.layer(line, area).resolve_scale(y="independent")
@@ -932,131 +1113,294 @@ with tab_work:
         df_w = db.load_data("Workouts")
         d = ana.prepare_workouts(df_w)
 
-        with ui.card("filter"):
-            f = ui.cols(3, 1, keep_row=True)
-            sel_p = f[0].selectbox("프로젝트", ["전체"] + list(proj_opts)[1:], key="hist_p")
-            sel_t = f[1 % len(f)].selectbox("유형", ["전체"] + WORKOUT_TYPES, key="hist_t")
-            days = f[2 % len(f)].selectbox("기간", [30, 90, 180, 365, 9999],
-                                           index=2, format_func=lambda x: "전체" if x > 1000 else f"최근 {x}일")
-
-        if not d.empty:
-            view = d[d["WorkoutDate"] >= pd.Timestamp.now().normalize() - timedelta(days=days)]
-            if sel_p != "전체":
-                view = view[view["ProjectID"].astype(str) == proj_opts[sel_p]]
-            if sel_t != "전체":
-                view = view[view["WorkoutType"] == sel_t]
-        else:
-            view = d
-
-        with ui.card("histsum"):
-            if not view.empty:
-                ui.metrics([
-                    ("총 거리", f"{view['DistanceKm'].sum():.1f} km", None),
-                    ("횟수", f"{len(view)}회", None),
-                    ("총 시간", ana.time_str(view["DurationMinutes"].sum() * 60), None),
-                    ("평균 페이스", ana.pace_str(
-                        view["DurationMinutes"].sum() * 60 / max(view["DistanceKm"].sum(), .001)), None)],
-                    per_row_pc=4)
+        # ---- 기간 선택 (기본: 이번 주) --------------------------------------
+        with ui.card("period"):
+            ui.head("🗓️ 기간", "기본은 주 단위입니다 — 날짜를 바꾸면 그 주 전체가 나옵니다")
+            pc0 = ui.cols(4, 2, keep_row=True)
+            punit = pc0[0].selectbox("단위", ["주", "월", "전체"], key="hist_unit")
+            if punit != "전체":
+                # 버튼은 date_input보다 먼저 처리해야 세션 값을 바꿀 수 있습니다
+                if pc0[1 % len(pc0)].button("◀ 이전", width="stretch", key="hist_prev"):
+                    st.session_state["hist_date"] = period_shift(
+                        st.session_state.get("hist_date", date.today()), punit, -1)
+                    st.rerun()
+                if pc0[2 % len(pc0)].button("다음 ▶", width="stretch", key="hist_next"):
+                    st.session_state["hist_date"] = period_shift(
+                        st.session_state.get("hist_date", date.today()), punit, +1)
+                    st.rerun()
+                anchor = pc0[3 % len(pc0)].date_input(
+                    "기준 날짜", st.session_state.get("hist_date", date.today()),
+                    key="hist_date")
             else:
-                st.caption("조건에 맞는 기록이 없습니다.")
+                anchor = date.today()
+            p_start, p_end = period_range(anchor, punit)
 
+            pc1 = ui.cols(2, 1, keep_row=True)
+            sel_p = pc1[0].selectbox("프로젝트", ["전체"] + list(proj_opts)[1:], key="hist_p")
+            sel_t = pc1[1 % len(pc1)].selectbox("유형", ["전체"] + WORKOUT_TYPES, key="hist_t")
+
+            if p_start is None:
+                st.caption("전체 기간의 기록을 봅니다.")
+            else:
+                st.markdown(
+                    f"<p class='rl-sub' style='margin:6px 0 0'>"
+                    f"<b>{p_start:%Y-%m-%d}({WD_KR[p_start.weekday()]})"
+                    f" ~ {p_end:%Y-%m-%d}({WD_KR[p_end.weekday()]})</b>"
+                    f" · {(p_end - p_start).days + 1}일</p>", unsafe_allow_html=True)
+
+        def in_period(df, a, b):
+            if df.empty or a is None:
+                return df
+            return df[(df["WorkoutDate"] >= pd.Timestamp(a)) &
+                      (df["WorkoutDate"] <= pd.Timestamp(b) + pd.Timedelta(days=1)
+                       - pd.Timedelta(seconds=1))]
+
+        def apply_filters(df):
+            if df.empty:
+                return df
+            if sel_p != "전체":
+                df = df[df["ProjectID"].astype(str) == proj_opts[sel_p]]
+            if sel_t != "전체":
+                df = df[df["WorkoutType"] == sel_t]
+            return df
+
+        view = apply_filters(in_period(d, p_start, p_end))
+        # 직전 같은 길이의 기간 — 증감 비교용
+        if p_start is None:
+            prev_view = d.iloc[0:0]
+        else:
+            span = (p_end - p_start).days + 1
+            prev_view = apply_filters(in_period(
+                d, p_start - timedelta(days=span), p_start - timedelta(days=1)))
+
+        # ---- 기간 요약 ------------------------------------------------------
+        with ui.card("histsum"):
+            if view.empty:
+                st.caption("이 기간에는 기록이 없습니다. 위에서 날짜나 단위를 바꿔보세요.")
+            else:
+                def delta(cur, prev, unit="", nd=1):
+                    if prev_view.empty or p_start is None:
+                        return None
+                    diff = cur - prev
+                    if abs(diff) < 10 ** (-nd):
+                        return "지난 기간과 같음"
+                    return f"{diff:+.{nd}f}{unit}"
+
+                tot_km = float(view["DistanceKm"].sum())
+                tot_min = float(view["DurationMinutes"].sum())
+                p_km = float(prev_view["DistanceKm"].sum()) if not prev_view.empty else 0.0
+                p_min = float(prev_view["DurationMinutes"].sum()) if not prev_view.empty else 0.0
+                hr_v = view.loc[view["AvgHeartRate"] > 0, "AvgHeartRate"]
+                ui.metrics([
+                    ("훈련 횟수", f"{len(view)}회",
+                     delta(len(view), len(prev_view), "회", 0)),
+                    ("총 거리", f"{tot_km:.1f} km", delta(tot_km, p_km, "km")),
+                    ("총 시간", ana.time_str(tot_min * 60),
+                     delta(tot_min / 60, p_min / 60, "시간")),
+                    ("평균 페이스", ana.pace_str(tot_min * 60 / max(tot_km, .001)),
+                     f"평균 심박 {hr_v.mean():.0f}" if not hr_v.empty else None),
+                ], per_row_pc=4)
+                if p_start is not None and not prev_view.empty:
+                    st.caption(f"증감은 **직전 {(p_end - p_start).days + 1}일"
+                               f"({p_start - timedelta(days=(p_end - p_start).days + 1):%m/%d}"
+                               f" ~ {p_start - timedelta(days=1):%m/%d})** 대비입니다.")
+
+        # ---- 유형별 통계 ----------------------------------------------------
+        if not view.empty:
+            with ui.card("histtype"):
+                ui.head("📊 유형별 통계", f"이 기간 훈련 {len(view)}회의 성격 분포")
+                g = view.groupby("WorkoutType", dropna=False)
+                t = pd.DataFrame({
+                    "유형": g.size().index,
+                    "횟수": g.size().values,
+                    "_km": g["DistanceKm"].sum().values,
+                    "_min": g["DurationMinutes"].sum().values,
+                })
+                hr_by = g.apply(lambda x: x.loc[x["AvgHeartRate"] > 0, "AvgHeartRate"].mean(),
+                                include_groups=False)
+                t["_hr"] = [hr_by.get(v, np.nan) for v in t["유형"]]
+                t = t.sort_values("_km", ascending=False).reset_index(drop=True)
+                tot_km2 = max(float(t["_km"].sum()), .001)
+                disp = pd.DataFrame({
+                    "유형": t["유형"],
+                    "횟수": t["횟수"],
+                    "거리(km)": t["_km"].round(2),
+                    "비중": (t["_km"] / tot_km2 * 100).round(1).astype(str) + "%",
+                    "시간": t["_min"].apply(lambda v: ana.time_str(v * 60)),
+                    "평균 페이스": (t["_min"] * 60 / t["_km"].clip(lower=.001)).apply(ana.pace_str),
+                    "평균 심박": t["_hr"].apply(lambda v: f"{v:.0f}" if np.isfinite(v) else "—"),
+                })
+                if ui.is_mobile():
+                    ui.item_list([
+                        (f"{r['유형']} · {r['거리(km)']}km ({r['비중']})",
+                         f"{r['횟수']}회 · {r['시간']} · {r['평균 페이스']} · {r['평균 심박']}bpm")
+                        for _, r in disp.iterrows()])
+                else:
+                    st.dataframe(disp, width="stretch", hide_index=True)
+                if len(t) > 1:
+                    st.altair_chart(alt.Chart(t).mark_bar(cornerRadius=4).encode(
+                        y=alt.Y("유형:N", sort="-x", title=None),
+                        x=alt.X("_km:Q", title="거리 (km)"),
+                        color=alt.Color("유형:N", legend=None,
+                                        scale=alt.Scale(range=CHART_PALETTE)),
+                        tooltip=[alt.Tooltip("유형"), alt.Tooltip("_km:Q", title="거리(km)",
+                                                                  format=".2f"),
+                                 alt.Tooltip("횟수:Q")]
+                    ).properties(height=ui.chart_height(28 * len(t) + 40,
+                                                        26 * len(t) + 40)), width="stretch")
+
+        # ---- 기록 목록 (클릭하면 아래에 상세) --------------------------------
+        sel_wid = None
         if not view.empty:
             with ui.card("histlist"):
-                ui.head("기록")
+                ui.head("📋 기록", "한 줄을 선택하면 아래에 그 훈련의 상세가 나옵니다")
+                vlist = view.iloc[::-1].reset_index(drop=True)
                 if ui.is_mobile():
+                    wopts = {f"{r.WorkoutDate:%m/%d} · {r.WorkoutType} · "
+                             f"{r.DistanceKm:.2f}km": r.WorkoutID
+                             for r in vlist.itertuples()}
+                    wpick = st.selectbox("훈련 선택", list(wopts), key="hist_pick")
+                    sel_wid = wopts[wpick]
                     ui.item_list([
                         (f"{r.WorkoutType} · {r.DistanceKm:.2f} km",
                          f"{r.WorkoutDate:%m/%d} · {ana.pace_str(r.PaceSec)} · "
                          f"{int(r.AvgHeartRate) if r.AvgHeartRate > 0 else '—'}bpm")
-                        for r in view.iloc[::-1].head(40).itertuples()])
+                        for r in vlist.itertuples()])
                 else:
-                    show = view.iloc[::-1][["WorkoutDate", "WorkoutType", "DistanceKm",
-                                            "DurationMinutes", "AvgHeartRate", "Surface", "Notes"]].copy()
-                    show["페이스"] = view.iloc[::-1]["PaceSec"].apply(ana.pace_str)
-                    show.columns = ["날짜", "유형", "거리(km)", "시간(분)", "평균심박", "노면", "메모", "페이스"]
-                    st.dataframe(show, width="stretch", hide_index=True,
-                                 column_config={"날짜": st.column_config.DateColumn(format="YYYY-MM-DD")})
+                    show = vlist[["WorkoutDate", "WorkoutType", "DistanceKm",
+                                  "DurationMinutes", "AvgHeartRate", "Surface", "Notes"]].copy()
+                    show.insert(4, "페이스", vlist["PaceSec"].apply(ana.pace_str))
+                    show.columns = ["날짜", "유형", "거리(km)", "시간(분)", "페이스",
+                                    "평균심박", "노면", "메모"]
+                    ev = st.dataframe(
+                        show, width="stretch", hide_index=True,
+                        on_select="rerun", selection_mode="single-row", key="hist_tbl",
+                        column_config={"날짜": st.column_config.DateColumn(format="YYYY-MM-DD")})
+                    rows = list(getattr(ev, "selection", {}).get("rows", []))
+                    if rows and rows[0] < len(vlist):
+                        sel_wid = vlist.iloc[rows[0]]["WorkoutID"]
+                    else:
+                        st.caption("↑ 표에서 한 줄을 클릭하세요. (가장 왼쪽 빈 칸을 누르면 선택됩니다)")
 
-            df_laps = db.load_data("Laps")
-            if not df_laps.empty:
-                with_laps = view[view["WorkoutID"].astype(str).isin(
-                    df_laps["WorkoutID"].astype(str))]
-                if not with_laps.empty:
-                    with ui.card("laps"):
-                        ui.head("🔁 구간(랩) 보기", "활동 상세 CSV로 가져온 훈련만 표시됩니다")
-                        lopts = {f"{r.WorkoutDate:%Y-%m-%d} · {r.WorkoutType} · "
-                                 f"{r.DistanceKm:.2f}km": r.WorkoutID
-                                 for r in with_laps.iloc[::-1].itertuples()}
-                        lpick = st.selectbox("훈련 선택", list(lopts), key="lap_pick")
-                        LL = df_laps[df_laps["WorkoutID"].astype(str) == str(lopts[lpick])].copy()
-                        if not LL.empty:
-                            CL = ana.classify_laps(LL)
-                            shape = ana.interval_shape(CL)
-                            dcp = ana.decoupling(CL[CL["역할"] != "자투리"])
-                            dtone, dtxt = ana.decoupling_verdict(dcp)
-                            st.markdown(
-                                f"<div style='margin-bottom:10px'>{ui.pill(shape, 'info')} "
-                                + (ui.pill(f"심박 디커플링 {dcp:+.1f}%", dtone)
-                                   if np.isfinite(dcp) else "")
-                                + f"</div><p class='rl-sub' style='margin-top:-4px'>{dtxt}</p>",
-                                unsafe_allow_html=True)
+        # ---- 선택한 훈련 상세 ------------------------------------------------
+        if sel_wid is not None:
+            wsel = d[d["WorkoutID"].astype(str) == str(sel_wid)]
+            if not wsel.empty:
+                W = wsel.iloc[0]
+                with ui.card("wdetail"):
+                    ui.head(f"🔍 {W['WorkoutDate']:%Y-%m-%d} · {W['WorkoutType']}",
+                            str(W.get("Notes") or ""))
+                    ui.metrics([
+                        ("거리", f"{W['DistanceKm']:.2f} km", None),
+                        ("시간", ana.time_str(W["DurationMinutes"] * 60), None),
+                        ("평균 페이스", ana.pace_str(W["PaceSec"]), None),
+                        ("평균 심박", f"{W['AvgHeartRate']:.0f}" if W["AvgHeartRate"] > 0 else "—",
+                         f"최고 {fnum(W.get('MaxHeartRate')):.0f}"
+                         if fnum(W.get("MaxHeartRate")) > 0 else None),
+                    ], per_row_pc=4)
+                    sub = [x for x in [
+                        f"케이던스 {fnum(W.get('AvgCadence')):.0f}"
+                        if fnum(W.get("AvgCadence")) > 0 else "",
+                        f"보폭 {fnum(W.get('AvgStrideM')):.2f}m"
+                        if fnum(W.get("AvgStrideM")) > 0 else "",
+                        f"접지 {fnum(W.get('AvgGCTms')):.0f}ms"
+                        if fnum(W.get("AvgGCTms")) > 0 else "",
+                        f"상승 {fnum(W.get('ElevationGainM')):.0f}m"
+                        if fnum(W.get("ElevationGainM")) > 0 else "",
+                        f"{fnum(W.get('Temperature')):.1f}°C"
+                        if fnum(W.get("Temperature")) != 0 else "",
+                        f"RPE {fnum(W.get('RPE')):.0f}" if fnum(W.get("RPE")) > 0 else "",
+                        str(W.get("Surface") or ""),
+                    ] if x]
+                    if sub:
+                        st.caption(" · ".join(sub))
 
-                            rs = ana.lap_role_summary(CL)
-                            if not rs.empty and len(rs) > 1:
-                                st.markdown("<p class='rl-sub' style='margin:10px 0 2px'>"
-                                            "<b>역할별 요약</b> — 인터벌·템포런은 이 표의 "
-                                            "‘반복’ 행이 실제 훈련 강도입니다</p>",
-                                            unsafe_allow_html=True)
-                                st.dataframe(rs, width="stretch", hide_index=True)
+                    df_laps = db.load_data("Laps")
+                    LL = (df_laps[df_laps["WorkoutID"].astype(str) == str(sel_wid)].copy()
+                          if not df_laps.empty else pd.DataFrame())
+                    if LL.empty:
+                        st.caption("이 훈련에는 저장된 랩이 없습니다. "
+                                   "‘📥 가져오기’에서 활동 상세 CSV를 넣으면 구간별로 보입니다.")
+                    else:
+                        CL = ana.classify_laps(LL)
+                        lap_km = float(pd.to_numeric(CL["DistanceKm"],
+                                                     errors="coerce").sum())
+                        w_km = float(W["DistanceKm"])
+                        if w_km > 0 and abs(lap_km - w_km) / w_km > 0.05:
+                            st.warning(f"⚠️ 랩 합계({lap_km:.2f}km)가 훈련 거리"
+                                       f"({w_km:.2f}km)와 다릅니다. "
+                                       "가져오기가 잘못됐을 수 있으니 확인해 주세요.")
+                        shape = ana.interval_shape(CL)
+                        dcp = ana.decoupling(CL[CL["역할"] != "자투리"])
+                        dtone, dtxt = ana.decoupling_verdict(dcp)
+                        st.markdown(
+                            f"<div style='margin:10px 0 0'>{ui.pill(shape, 'info')} "
+                            + (ui.pill(f"심박 디커플링 {dcp:+.1f}%", dtone)
+                               if np.isfinite(dcp) else "")
+                            + f"</div><p class='rl-sub' style='margin-top:-4px'>{dtxt}</p>",
+                            unsafe_allow_html=True)
+                        with st.expander("❓ 심박 디커플링이 뭔가요"):
+                            st.markdown(DECOUPLING_HELP)
 
-                            CL = CL.sort_values("LapNo")
-                            show_l = pd.DataFrame({
-                                "랩": CL["LapNo"].astype(int),
-                                "역할": CL["역할"],
-                                "거리(km)": CL["DistanceKm"].round(2),
-                                "시간": CL["DurationMinutes"].apply(lambda v: ana.time_str(v * 60)),
-                                "페이스": CL["PaceSec"].apply(ana.pace_str),
-                                "평균심박": CL["AvgHeartRate"],
-                                "최대심박": CL["MaxHeartRate"],
-                                "케이던스": CL["AvgCadence"],
-                                "보폭(m)": CL["AvgStrideM"],
-                            })
-                            if ui.is_mobile():
-                                ui.item_list([
-                                    (f"랩 {int(r['랩'])} · {r['역할']} · {r['페이스']}",
-                                     f"{r['거리(km)']}km · {r['시간']} · {r['평균심박']}bpm")
-                                    for _, r in show_l.iterrows()])
-                            else:
-                                st.dataframe(show_l, width="stretch", hide_index=True)
+                        rs = ana.lap_role_summary(CL)
+                        if not rs.empty and len(rs) > 1:
+                            st.markdown("<p class='rl-sub' style='margin:10px 0 2px'>"
+                                        "<b>역할별 요약</b> — 인터벌·템포런은 이 표의 "
+                                        "‘반복’ 행이 실제 훈련 강도입니다</p>",
+                                        unsafe_allow_html=True)
+                            st.dataframe(rs, width="stretch", hide_index=True)
 
-                            lp = CL[(CL["PaceSec"] > 0) & (CL["역할"] != "자투리")].copy()
-                            if len(lp) > 1:
-                                lp["페이스"] = lp["PaceSec"].apply(ana.pace_str)
-                                mm_ss = ("floor(datum.value/60) + ':' + "
-                                         "(datum.value%60 < 10 ? '0' : '') + "
-                                         "format(round(datum.value%60), 'd')")
-                                bars = alt.Chart(lp).mark_bar(cornerRadius=3).encode(
-                                    x=alt.X("LapNo:O", title="랩"),
-                                    y=alt.Y("PaceSec:Q", title="페이스 (짧을수록 빠름)",
-                                            scale=alt.Scale(zero=False, nice=True),
-                                            axis=alt.Axis(labelExpr=mm_ss)),
-                                    color=alt.Color("역할:N", title=None, scale=alt.Scale(
-                                        domain=ana.LAP_ROLES,
-                                        range=["#94a3b8", "#ef4444", "#34d399",
-                                               "#a5b4fc", "#3b5bdb", "#e2e8f0"])),
-                                    tooltip=[alt.Tooltip("LapNo", title="랩"),
-                                             alt.Tooltip("역할"),
-                                             alt.Tooltip("페이스"),
-                                             alt.Tooltip("DistanceKm", title="거리(km)"),
-                                             alt.Tooltip("AvgHeartRate", title="평균심박")])
-                                avg = alt.Chart(lp).mark_rule(
-                                    strokeDash=[5, 4], color="#8a93a1").encode(
-                                    y=alt.Y("mean(PaceSec):Q"))
-                                st.altair_chart((bars + avg).properties(
-                                    height=ui.chart_height(230, 200)), width="stretch")
-                                st.caption("점선 = 이 훈련의 평균 페이스 · "
-                                           "막대가 낮을수록 빠른 구간입니다.")
+                        CL = CL.sort_values("LapNo")
+                        show_l = pd.DataFrame({
+                            "랩": CL["LapNo"].astype(int),
+                            "역할": CL["역할"],
+                            "거리(km)": CL["DistanceKm"].map(lambda v: f"{fnum(v):.2f}"),
+                            "시간": CL["DurationMinutes"].apply(lambda v: ana.time_str(v * 60)),
+                            "페이스": CL["PaceSec"].apply(ana.pace_str),
+                            "평균심박": CL["AvgHeartRate"].map(lambda v: vtxt(v, "{:.0f}")),
+                            "최대심박": CL["MaxHeartRate"].map(lambda v: vtxt(v, "{:.0f}")),
+                            "케이던스": CL["AvgCadence"].map(lambda v: vtxt(v, "{:.0f}")),
+                            "보폭(m)": CL["AvgStrideM"].map(lambda v: vtxt(v, "{:.2f}")),
+                        })
+                        if ui.is_mobile():
+                            ui.item_list([
+                                (f"랩 {int(r['랩'])} · {r['역할']} · {r['페이스']}",
+                                 f"{r['거리(km)']}km · {r['시간']} · {r['평균심박']}bpm")
+                                for _, r in show_l.iterrows()])
+                        else:
+                            st.dataframe(show_l, width="stretch", hide_index=True)
 
+                        lp = CL[(CL["PaceSec"] > 0) & (CL["역할"] != "자투리")].copy()
+                        if len(lp) > 1:
+                            lp["페이스"] = lp["PaceSec"].apply(ana.pace_str)
+                            mm_ss = ("floor(datum.value/60) + ':' + "
+                                     "(datum.value%60 < 10 ? '0' : '') + "
+                                     "format(round(datum.value%60), 'd')")
+                            bars = alt.Chart(lp).mark_bar(cornerRadius=3).encode(
+                                x=alt.X("LapNo:O", title="랩"),
+                                y=alt.Y("PaceSec:Q", title="페이스 (짧을수록 빠름)",
+                                        scale=alt.Scale(zero=False, nice=True),
+                                        axis=alt.Axis(labelExpr=mm_ss)),
+                                color=alt.Color("역할:N", title=None, scale=alt.Scale(
+                                    domain=ana.LAP_ROLES,
+                                    range=[C["slate"], C["accent"], C["teal"],
+                                           C["violet"], C["primary"], C["pale"]])),
+                                tooltip=[alt.Tooltip("LapNo", title="랩"),
+                                         alt.Tooltip("역할"),
+                                         alt.Tooltip("페이스"),
+                                         alt.Tooltip("DistanceKm", title="거리(km)"),
+                                         alt.Tooltip("AvgHeartRate", title="평균심박")])
+                            avg = alt.Chart(lp).mark_rule(
+                                strokeDash=[5, 4], color=C["slate"]).encode(
+                                y=alt.Y("mean(PaceSec):Q"),
+                                tooltip=[alt.Tooltip("mean(PaceSec):Q", title="평균 페이스(초/km)",
+                                                     format=".0f")])
+                            st.altair_chart((bars + avg).properties(
+                                height=ui.chart_height(230, 200)), width="stretch")
+                            st.caption("점선 = 이 훈련의 평균 페이스 · "
+                                       "막대가 낮을수록 빠른 구간입니다.")
+
+        if not view.empty:
             with ui.card("edit"):
                 ui.head("✏️ 수정 / 삭제")
                 opts = {f"{r.WorkoutDate:%Y-%m-%d} · {r.WorkoutType} · {r.DistanceKm:.2f}km": r.WorkoutID
@@ -1122,8 +1466,11 @@ with tab_work:
                             x=alt.X("StatusDate:T", title=None, axis=date_axis(_span_days(tl["StatusDate"]))),
                             y=alt.Y("상태:N", sort=order, title=None),
                             color=alt.Color("상태:N", sort=order, legend=None,
-                                            scale=alt.Scale(scheme="redyellowgreen")),
-                            tooltip=["StatusDate:T", "상태:N"]
+                                            scale=alt.Scale(domain=order,
+                                                            range=ramp(len(order),
+                                                                       C["accent"], C["teal"]))),
+                            tooltip=[alt.Tooltip("StatusDate:T", title="날짜", format="%Y-%m-%d"),
+                                     alt.Tooltip("상태:N", title="상태")]
                         ).properties(height=ui.chart_height(220, 200)), width="stretch")
                     else:
                         st.caption("Training Status 입력 기록이 없습니다.")
@@ -1134,18 +1481,26 @@ with tab_work:
                                                                              subset=["AcuteLoad", "LoadRatio"])
                     if not ld.empty:
                         bars = alt.Chart(ld).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3,
-                                                      color="#2563eb", opacity=.75).encode(
+                                                      color=C["primary"], opacity=.7).encode(
                             x=alt.X("StatusDate:T", title=None, axis=date_axis(_span_days(ld["StatusDate"]))),
                             y=alt.Y("AcuteLoad:Q", title="Acute Load",
                                     axis=alt.Axis(format=",d", tickMinStep=1)),
-                            tooltip=["StatusDate:T", "AcuteLoad:Q", "LoadRatio:Q"])
-                        ln = alt.Chart(ld).mark_line(color="#f97316", strokeWidth=2.5,
+                            tooltip=[alt.Tooltip("StatusDate:T", title="날짜", format="%Y-%m-%d"),
+                                     alt.Tooltip("AcuteLoad:Q", title="Acute Load", format=",d"),
+                                     alt.Tooltip("LoadRatio:Q", title="Load Ratio", format=".2f")])
+                        ln = alt.Chart(ld).mark_line(color=C["accent"], strokeWidth=2.5,
                                                      point=True).encode(
                             x=alt.X("StatusDate:T", title=None, axis=date_axis(_span_days(ld["StatusDate"]))),
                             y=alt.Y("LoadRatio:Q", title="Load Ratio",
-                                    axis=alt.Axis(format=".2f")))
+                                    axis=alt.Axis(format=".2f")),
+                            tooltip=[alt.Tooltip("StatusDate:T", title="날짜",
+                                                 format="%Y-%m-%d"),
+                                     alt.Tooltip("LoadRatio:Q", title="Load Ratio",
+                                                 format=".2f"),
+                                     alt.Tooltip("AcuteLoad:Q", title="Acute Load",
+                                                 format=",d")])
                         band = alt.Chart(pd.DataFrame({"lo": [0.8], "hi": [1.5]})).mark_rect(
-                            opacity=.08, color="#059669").encode(y="lo:Q", y2="hi:Q")
+                            opacity=.10, color=C["teal"]).encode(y="lo:Q", y2="hi:Q")
                         st.altair_chart(alt.layer(bars, (band + ln))
                                         .resolve_scale(y="independent")
                                         .properties(height=ui.chart_height(290, 230)), width="stretch")
@@ -1164,7 +1519,11 @@ with tab_work:
                                         axis=date_axis(_span_days(gdv["StatusDate"]))),
                                 y=alt.Y("값:Q", title=None, scale=alt.Scale(zero=False),
                                         axis=alt.Axis(format=",d", tickMinStep=1)),
-                                color=alt.Color("지표:N", title=None)
+                                color=alt.Color("지표:N", title=None),
+                                tooltip=[alt.Tooltip("StatusDate:T", title="날짜",
+                                                     format="%Y-%m-%d"),
+                                         alt.Tooltip("지표:N", title="지표"),
+                                         alt.Tooltip("값:Q", title="값", format=",d")]
                             ).properties(height=ui.chart_height(200, 180)), width="stretch")
                         else:
                             st.caption("데이터 없음")
@@ -1179,7 +1538,11 @@ with tab_work:
                                         axis=date_axis(_span_days(gdv["StatusDate"]))),
                                 y=alt.Y("값:Q", title=None, scale=alt.Scale(zero=False),
                                         axis=alt.Axis(format=",d", tickMinStep=1)),
-                                color=alt.Color("지표:N", title=None)
+                                color=alt.Color("지표:N", title=None),
+                                tooltip=[alt.Tooltip("StatusDate:T", title="날짜",
+                                                     format="%Y-%m-%d"),
+                                         alt.Tooltip("지표:N", title="지표"),
+                                         alt.Tooltip("값:Q", title="값", format=",d")]
                             ).properties(height=ui.chart_height(200, 180)), width="stretch")
                         else:
                             st.caption("데이터 없음")
@@ -1207,18 +1570,20 @@ with tab_work:
                                     axis=alt.Axis(format="%")),
                             color=alt.Color("구분:N", title=None, scale=alt.Scale(
                                 domain=["무산소", "고강도 유산소", "저강도 유산소"],
-                                range=["#ef4444", "#f59e0b", "#3b82f6"])),
-                            tooltip=["측정일:O", "구분:N", "부하:Q"]
+                                range=[C["accent"], C["amber"], C["primary"]])),
+                            tooltip=[alt.Tooltip("측정일:O", title="측정일"),
+                                     alt.Tooltip("구분:N", title="구분"),
+                                     alt.Tooltip("부하:Q", title="부하", format=",d")]
                         ).properties(height=ui.chart_height(260, 220)), width="stretch")
                     else:
                         st.caption("Load Focus 입력 기록이 없습니다.")
 
                 with ui.card("gscore"):
                     ui.head("🏅 가민 기량 점수 추이", "각 지표는 단위가 달라 따로 그립니다")
-                    score_cols = [("VO2Max", "VO₂max", "#2563eb", ".1f", 0.1),
-                                  ("EnduranceScore", "Endurance Score", "#0d9488", ",d", 1),
-                                  ("HillScore", "Hill Score", "#f97316", ",d", 1),
-                                  ("FitnessAge", "피트니스 나이", "#7c3aed", ",d", 1)]
+                    score_cols = [("VO2Max", "VO₂max", C["primary"], ".1f", 0.1),
+                                  ("EnduranceScore", "Endurance Score", C["teal"], ",d", 1),
+                                  ("HillScore", "Hill Score", C["accent"], ",d", 1),
+                                  ("FitnessAge", "피트니스 나이", C["violet"], ",d", 1)]
                     sc_cols = ui.cols(2, 1)
                     for i, (col, title, color, fmt, step) in enumerate(score_cols):
                         sub = gmv[["MetricDate", col]].dropna()
@@ -1254,7 +1619,10 @@ with tab_work:
                             y=alt.Y("AnaerobicTE:Q", title="무산소 TE",
                                     scale=alt.Scale(domain=[0, 5])),
                             color=alt.Color("WorkoutType:N", title=None),
-                            tooltip=["WorkoutDate:T", "WorkoutType", "AerobicTE", "AnaerobicTE"]
+                            tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜", format="%Y-%m-%d"),
+                                     alt.Tooltip("WorkoutType:N", title="유형"),
+                                     alt.Tooltip("AerobicTE:Q", title="유산소 TE", format=".1f"),
+                                     alt.Tooltip("AnaerobicTE:Q", title="무산소 TE", format=".1f")]
                         ).properties(height=ui.chart_height(300, 260)), width="stretch")
 
     # ── 2-4 심박존 분석 ────────────────────────────────────────────────────
@@ -1322,7 +1690,10 @@ with tab_work:
                         x=alt.X("비중(%):Q", title="%"),
                         color=alt.Color("존:N", sort=zone_order(ZM), legend=None,
                                         scale=zone_scale(ZM)),
-                        tooltip=["존", "시간", "비중(%)", "거리(km)", "평균 페이스"]
+                        tooltip=[alt.Tooltip("존:N", title="존"), alt.Tooltip("시간:N", title="시간"),
+                                 alt.Tooltip("비중(%):Q", title="비중(%)", format=".1f"),
+                                 alt.Tooltip("거리(km):Q", title="거리(km)", format=".2f"),
+                                 alt.Tooltip("평균 페이스:N", title="평균 페이스")]
                     ).properties(height=ui.chart_height(220, 200)), width="stretch")
                     inten_z = ana.intensity_distribution(zoned, ZM, days_z)
                     if inten_z:
@@ -1341,7 +1712,9 @@ with tab_work:
                         theta=alt.Theta("거리(km):Q"),
                         color=alt.Color("존:N", sort=zone_order(ZM), title=None,
                                         scale=zone_scale(ZM)),
-                        tooltip=["존", "거리(km)", "세션"]
+                        tooltip=[alt.Tooltip("존:N", title="존"),
+                                 alt.Tooltip("거리(km):Q", title="거리(km)", format=".2f"),
+                                 alt.Tooltip("세션:Q", title="세션", format=",d")]
                     ).properties(height=ui.chart_height(240, 220)), width="stretch")
 
             with ui.card("zhist"):
@@ -1354,7 +1727,8 @@ with tab_work:
                                 axis=alt.Axis(format="%")),
                         color=alt.Color("존:N", sort=zone_order(ZM), title=None,
                                         scale=zone_scale(ZM)),
-                        tooltip=["주", "존", "분"]
+                        tooltip=[alt.Tooltip("주:O", title="주"), alt.Tooltip("존:N", title="존"),
+                                 alt.Tooltip("분:Q", title="분", format=".0f")]
                     ).properties(height=ui.chart_height(280, 240)), width="stretch")
                 else:
                     st.caption("데이터 없음")
@@ -1370,14 +1744,19 @@ with tab_work:
                     st.caption("해당 존의 기록이 부족합니다.")
                 else:
                     pts = alt.Chart(tr).mark_circle(size=70, opacity=.5,
-                                                    color="#2563eb").encode(
+                                                    color=C["primary"]).encode(
                         x=alt.X("WorkoutDate:T", title=None,
                                 axis=date_axis(_span_days(tr["WorkoutDate"]))),
                         y=alt.Y("페이스(분/km):Q", scale=alt.Scale(zero=False, reverse=True)),
                         size=alt.Size("DistanceKm:Q", legend=None),
-                        tooltip=["WorkoutDate:T", "페이스(분/km):Q", "AvgHeartRate:Q"])
-                    ln = alt.Chart(tr).mark_line(color="#f97316", strokeWidth=2.5).encode(
-                        x="WorkoutDate:T", y=alt.Y("추세:Q", scale=alt.Scale(zero=False, reverse=True)))
+                        tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜", format="%Y-%m-%d"),
+                                 alt.Tooltip("페이스(분/km):Q", title="페이스", format=".2f"),
+                                 alt.Tooltip("AvgHeartRate:Q", title="평균 심박", format=",d")])
+                    ln = alt.Chart(tr).mark_line(color=C["accent"], strokeWidth=2.5).encode(
+                        x="WorkoutDate:T",
+                        y=alt.Y("추세:Q", scale=alt.Scale(zero=False, reverse=True)),
+                        tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜", format="%Y-%m-%d"),
+                                 alt.Tooltip("추세:Q", title="추세(분/km)", format=".2f")])
                     st.altair_chart((pts + ln).properties(
                         height=ui.chart_height(280, 240)), width="stretch")
 
@@ -1400,12 +1779,19 @@ with tab_work:
                 wdf = wk.reset_index(names="주")
                 wdf["주"] = wdf["주"].str.slice(0, 10)
                 bars = alt.Chart(wdf).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4,
-                                               color="#2563eb", opacity=.85).encode(
+                                               color=C["primary"], opacity=.85).encode(
                     x=alt.X("주:O", title=None, axis=alt.Axis(labelAngle=-45, labelLimit=70)),
                     y=alt.Y("Distance:Q", title="km"),
-                    tooltip=["주", "Distance", "Runs", "LongRun", "AvgPaceStr", "WoW%"])
-                ma = alt.Chart(wdf).mark_line(color="#f97316", strokeWidth=2.5, point=True).encode(
-                    x=alt.X("주:O", title=None), y=alt.Y("MA4:Q", title=None))
+                    tooltip=[alt.Tooltip("주:O", title="주"),
+                             alt.Tooltip("Distance:Q", title="거리(km)", format=".1f"),
+                             alt.Tooltip("Runs:Q", title="횟수", format=",d"),
+                             alt.Tooltip("LongRun:Q", title="롱런(km)", format=".1f"),
+                             alt.Tooltip("AvgPaceStr:N", title="평균 페이스"),
+                             alt.Tooltip("WoW%:Q", title="전주대비(%)", format=".1f")])
+                ma = alt.Chart(wdf).mark_line(color=C["accent"], strokeWidth=2.5, point=True).encode(
+                    x=alt.X("주:O", title=None), y=alt.Y("MA4:Q", title=None),
+                    tooltip=[alt.Tooltip("주:O", title="주"),
+                             alt.Tooltip("MA4:Q", title="4주 평균(km)", format=".1f")])
                 st.altair_chart((bars + ma).properties(height=ui.chart_height(300, 240)),
                                 width="stretch")
                 if not ui.is_mobile():
@@ -1427,12 +1813,20 @@ with tab_work:
                     if inten := ana.intensity_distribution(_zd, _zm):
                         zd = pd.DataFrame({"존": list(inten["zone_pct"]),
                                            "비율": list(inten["zone_pct"].values())})
-                        st.altair_chart(alt.Chart(zd).mark_bar(cornerRadius=4).encode(
+                        _base = alt.Chart(zd).encode(
                             y=alt.Y("존:N", sort=None, title=None),
-                            x=alt.X("비율:Q", title="%"),
-                            color=alt.Color("존:N", legend=None, sort=zone_order(_zm),
-                                            scale=zone_scale(_zm)),
-                            tooltip=["존", "비율"]).properties(height=ui.chart_height(200, 180)),
+                            x=alt.X("비율:Q", title=None,
+                                    axis=None, scale=alt.Scale(nice=False)),
+                            tooltip=[alt.Tooltip("존:N", title="존"),
+                                     alt.Tooltip("비율:Q", title="비중(%)", format=".1f")])
+                        st.altair_chart(
+                            (_base.mark_bar(cornerRadius=5, height=16).encode(
+                                color=alt.Color("존:N", legend=None, sort=zone_order(_zm),
+                                                scale=zone_scale(_zm)))
+                             + _base.mark_text(align="left", dx=6, fontSize=11,
+                                               fontWeight=600, color=C["slate"]).encode(
+                                 text=alt.Text("비율:Q", format=".1f"))
+                             ).properties(height=ui.chart_height(200, 180)),
                             width="stretch")
                         p = inten["polarized_pct"]
                         ui.rows([("저강도 (LT1 미만)", f"{p['low']}%"),
@@ -1462,15 +1856,20 @@ with tab_work:
                     ef = ana.efficiency_factor(df_w)
                     if not ef.empty:
                         st.altair_chart(alt.Chart(ef).mark_circle(size=45, opacity=.45,
-                                                                  color="#2563eb").encode(
+                                                                  color=C["primary"]).encode(
                             x=alt.X("WorkoutDate:T", title=None,
                                     axis=date_axis(_span_days(ef["WorkoutDate"]))),
                             y=alt.Y("EF:Q", title="EF",
                                                                           scale=alt.Scale(zero=False)),
-                            tooltip=["WorkoutDate:T", alt.Tooltip("EF:Q", format=".3f")])
+                            tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜", format="%Y-%m-%d"),
+                                     alt.Tooltip("EF:Q", title="EF", format=".3f")])
                             .properties(height=ui.chart_height(200, 180))
-                            + alt.Chart(ef).mark_line(color="#f97316", strokeWidth=2.5).encode(
-                                x="WorkoutDate:T", y="EF_MA4:Q"),
+                            + alt.Chart(ef).mark_line(color=C["accent"], strokeWidth=2.5).encode(
+                                x="WorkoutDate:T", y="EF_MA4:Q",
+                                tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜",
+                                                     format="%Y-%m-%d"),
+                                         alt.Tooltip("EF_MA4:Q", title="4회 평균 EF",
+                                                     format=".3f")]),
                             width="stretch")
                     else:
                         st.caption("이지런(Easy/Recovery/LSD) 기록이 필요합니다.")
@@ -1496,9 +1895,13 @@ with tab_work:
                         x=alt.X("페이스(분/km):Q", scale=alt.Scale(zero=False, reverse=True)),
                         y=alt.Y("AvgHeartRate:Q", title="평균 심박", scale=alt.Scale(zero=False),
                             axis=alt.Axis(format=",d", tickMinStep=1)),
-                        color=alt.Color("월:N", scale=alt.Scale(scheme="viridis"), title=None),
+                        color=alt.Color("월:N", title=None,
+                                       scale=alt.Scale(range=ramp(sc["월"].nunique()))),
                         size=alt.Size("DistanceKm:Q", legend=None),
-                        tooltip=["WorkoutDate:T", "WorkoutType", "DistanceKm", "AvgHeartRate"])
+                        tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜", format="%Y-%m-%d"),
+                                 alt.Tooltip("WorkoutType:N", title="유형"),
+                                 alt.Tooltip("DistanceKm:Q", title="거리(km)", format=".2f"),
+                                 alt.Tooltip("AvgHeartRate:Q", title="평균 심박", format=",d")])
                         .properties(height=ui.chart_height(320, 260)), width="stretch")
 
             with ui.card("cal"):
@@ -1513,8 +1916,10 @@ with tab_work:
                                                         strokeWidth=2).encode(
                     x=alt.X("주차:O", axis=None),
                     y=alt.Y("요일명:N", sort=["월", "화", "수", "목", "금", "토", "일"], title=None),
-                    color=alt.Color("DistanceKm:Q", scale=alt.Scale(scheme="blues"), legend=None),
-                    tooltip=["Date:T", alt.Tooltip("DistanceKm:Q", title="거리", format=".1f")])
+                    color=alt.Color("DistanceKm:Q", legend=None,
+                                   scale=alt.Scale(range=[C["pale"], C["primary"]])),
+                    tooltip=[alt.Tooltip("Date:T", title="날짜", format="%Y-%m-%d"),
+                             alt.Tooltip("DistanceKm:Q", title="거리(km)", format=".1f")])
                     .properties(height=ui.chart_height(170, 150)), width="stretch")
 
             k = ui.cols(2, 1)
@@ -1522,9 +1927,10 @@ with tab_work:
                 with ui.card("bytype"):
                     ui.head("🏃 유형별 거리")
                     t = d.groupby("WorkoutType", as_index=False)["DistanceKm"].sum()
-                    st.altair_chart(alt.Chart(t).mark_bar(cornerRadius=4, color="#2563eb").encode(
+                    st.altair_chart(alt.Chart(t).mark_bar(cornerRadius=5, color=C["primary"]).encode(
                         y=alt.Y("WorkoutType:N", sort="-x", title=None),
-                        x=alt.X("DistanceKm:Q", title="km"), tooltip=["WorkoutType", "DistanceKm"])
+                        x=alt.X("DistanceKm:Q", title="km"), tooltip=[alt.Tooltip("WorkoutType:N", title="유형"),
+                                 alt.Tooltip("DistanceKm:Q", title="거리(km)", format=".1f")])
                         .properties(height=ui.chart_height(220, 200)), width="stretch")
             with k[1 % len(k)]:
                 with ui.card("bymonth"):
@@ -1532,9 +1938,10 @@ with tab_work:
                     mm = d.copy()
                     mm["월"] = mm["WorkoutDate"].dt.to_period("M").astype(str)
                     mv = mm.groupby("월", as_index=False)["DistanceKm"].sum()
-                    st.altair_chart(alt.Chart(mv).mark_bar(cornerRadius=4, color="#0ea5e9").encode(
+                    st.altair_chart(alt.Chart(mv).mark_bar(cornerRadius=5, color=C["primary"]).encode(
                         x=alt.X("월:O", title=None, axis=alt.Axis(labelAngle=-45)),
-                        y=alt.Y("DistanceKm:Q", title="km"), tooltip=["월", "DistanceKm"])
+                        y=alt.Y("DistanceKm:Q", title="km"), tooltip=[alt.Tooltip("월:N", title="월"),
+                                 alt.Tooltip("DistanceKm:Q", title="거리(km)", format=".1f")])
                         .properties(height=ui.chart_height(220, 200)), width="stretch")
 
     # ── 2-4 기량 예측 ──────────────────────────────────────────────────────
@@ -1552,7 +1959,7 @@ with tab_work:
                 vdot = ana.vdot_from_performance(bd, bm)
                 v[2 % len(v)].metric("VDOT", f"{vdot:.1f}" if np.isfinite(vdot) else "—")
             else:
-                prs = ana.detect_prs(df_w)
+                prs = ana.detect_prs(df_w, df_laps=db.load_data("Laps"))
                 cands = []
                 for name, dist in ana.PR_CATEGORIES:
                     row = prs[prs["Category"] == name]
@@ -2134,7 +2541,7 @@ with tab_goal:
         if df_races.empty:
             st.caption("등록된 대회가 없습니다.")
         else:
-            prs = ana.detect_prs(df_w)
+            prs = ana.detect_prs(df_w, df_laps=db.load_data("Laps"))
             vdot = np.nan
             for name, dist in ana.PR_CATEGORIES:
                 row = prs[prs["Category"] == name]
@@ -2188,15 +2595,35 @@ with tab_goal:
     with g4:
         df_w = db.load_data("Workouts")
         with ui.card("pr"):
-            ui.head("🏆 개인 최고 기록", "훈련 이력에서 자동 추출 (거리 ±3% 허용)")
-            prs = ana.detect_prs(df_w)
+            ui.head("🏆 개인 최고 기록",
+                    "훈련 전체 기록 + 훈련 안의 가장 빠른 구간 중 좋은 쪽")
+            prs = ana.detect_prs(df_w, df_laps=db.load_data("Laps"))
             if ui.is_mobile():
                 ui.item_list([(f"{r.Category} — {r.TimeOrDist}",
-                               f"{r.AchievedDate} · {r.PaceStr}") for r in prs.itertuples()])
+                               f"{r.AchievedDate} · {r.PaceStr} · {r.Workout} · {r.Source}"
+                               + (f" · {r.Note}" if r.Note else ""))
+                              for r in prs.itertuples()])
             else:
-                st.dataframe(prs.rename(columns={"Category": "종목", "TimeOrDist": "기록",
-                                                 "AchievedDate": "달성일", "PaceStr": "페이스"}),
-                             width="stretch", hide_index=True)
+                st.dataframe(prs.rename(columns={
+                    "Category": "종목", "TimeOrDist": "기록", "AchievedDate": "달성일",
+                    "PaceStr": "페이스", "Workout": "어느 훈련에서",
+                    "Source": "출처", "Note": "구간"})[
+                    ["종목", "기록", "달성일", "페이스", "어느 훈련에서", "출처", "구간"]],
+                    width="stretch", hide_index=True)
+            with st.expander("❓ ‘출처’가 뭔가요"):
+                st.markdown(
+                    "1km 기록을 세우려고 1km만 따로 뛸 필요는 없습니다. "
+                    "저장된 **랩을 이어 붙여** 그 훈련 안에서 가장 빠른 연속 구간을 찾아 "
+                    "기록으로 인정합니다.\n\n"
+                    "- **훈련 전체** — 훈련 거리가 목표와 ±3% 안에 드는 기록\n"
+                    "- **구간 N랩** — 훈련 안의 가장 빠른 연속 N개 랩. "
+                    "**어느 훈련에서**·**달성일**·**구간**(예: `랩 3~8`)을 함께 적어두니 "
+                    "훈련 이력에서 그 날짜를 눌러 원본 랩을 바로 확인할 수 있습니다\n"
+                    "- 구간 거리가 목표와 딱 맞지 않으면 시간을 비례 환산하고 "
+                    "**비고**에 실제 구간 거리를 적습니다 (예: 5.2km 구간 → 5km 환산). "
+                    "목표의 1.25배를 넘는 구간은 오차가 커서 쓰지 않습니다.\n\n"
+                    "랩이 저장된 훈련에서만 잡히니, ‘📥 가져오기’로 **활동 상세 CSV**를 "
+                    "넣을수록 정확해집니다.")
             st.caption("※ 최대노력이 아닌 훈련도 포함될 수 있습니다. 레이스 기록은 대회 탭에서 따로 관리하세요.")
 
 
@@ -2336,8 +2763,8 @@ with tab_admin:
 
         if not chg_p.empty:
             pc = ui.cols(2, 1)
-            prof_charts = [("WeightKg", "체중 (kg)", "#2563eb", ".1f", 0.1),
-                           ("LTHR", "LTHR (bpm)", "#ef4444", ",d", 1)]
+            prof_charts = [("WeightKg", "체중 (kg)", C["primary"], ".1f", 0.1),
+                           ("LTHR", "LTHR (bpm)", C["accent"], ",d", 1)]
             for i, (col, title, color, fmt, step) in enumerate(prof_charts):
                 sub = chg_p[["Date", col]].dropna()
                 sub = sub[pd.to_numeric(sub[col], errors="coerce") > 0]
@@ -2418,7 +2845,11 @@ with tab_admin:
                         x=alt.X("StatusDate:T", title=None, axis=date_axis(_span_days(dv["StatusDate"]))),
                         y=alt.Y("값:Q", title=None,
                                 axis=alt.Axis(format=",d", tickMinStep=1)),
-                        color=alt.Color("지표:N", title=None)).properties(
+                        color=alt.Color("지표:N", title=None),
+                        tooltip=[alt.Tooltip("StatusDate:T", title="날짜",
+                                             format="%Y-%m-%d"),
+                                 alt.Tooltip("지표:N", title="지표"),
+                                 alt.Tooltip("값:Q", title="값", format=",d")]).properties(
                         height=ui.chart_height()), width="stretch")
 
         record_editor(
@@ -2521,7 +2952,7 @@ with tab_admin:
                         ui.head(title)
                         if not sub.empty:
                             st.altair_chart(alt.Chart(sub).mark_line(
-                                point=True, strokeWidth=2.5, color="#2563eb").encode(
+                                point=True, strokeWidth=2.5, color=C["primary"]).encode(
                                 x=alt.X("MetricDate:T", title=None, axis=date_axis(_span_days(sub["MetricDate"]))),
                                 y=alt.Y(f"{col}:Q", title=None,
                                         scale=alt.Scale(zero=False),
