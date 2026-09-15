@@ -57,11 +57,13 @@ SCHEMA: dict[str, list[str]] = {
     "Races": ["RaceID", "ProjectID", "RaceDate", "RaceName", "Distance", "DistanceKm",
               "GoalTime", "ActualTime", "ShoeID", "ResultStatus", "Notes"],
     # ── 랩(구간) 기록 — 활동 상세 CSV를 올리면 함께 저장됩니다 ───────────
+    # ※ 새 컬럼은 반드시 맨 뒤에 추가할 것 (중간 삽입 시 기존 데이터가 한 칸씩 밀림)
     "Laps": ["LapID", "WorkoutID", "WorkoutDate", "WorkoutType", "LapNo",
              "CumMinutes", "DistanceKm", "DurationMinutes",
              "PaceSec", "AvgHeartRate", "MaxHeartRate", "AvgPower", "AvgCadence",
              "ElevGainM", "ElevLossM", "AvgGCTms", "AvgStrideM",
-             "AvgVertOscCm", "AvgVertRatioPct", "Calories", "TempC"],
+             "AvgVertOscCm", "AvgVertRatioPct", "Calories", "TempC",
+             "LapRole"],
     "CoachNotes": ["NoteID", "ProjectID", "NoteDate", "Category", "NoteText"],
     "TrainingPlans": ["PlanID", "PlanDate", "GarminPlan", "CopilotPlan",
                       "SelectedPlan", "Status", "Notes"],
