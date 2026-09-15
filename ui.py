@@ -278,6 +278,53 @@ div[data-testid="stAlert"] { border-radius:var(--r-md); border:1px solid var(--l
 .rl-bar > i.warn { background:var(--warn); }
 .rl-bar > i.bad  { background:var(--bad); }
 
+/* ── 벤토 타일 (대시보드) ───────────────────────────── */
+.rl-tiles { display:grid; grid-template-columns:repeat(4,minmax(0,1fr));
+            gap:12px; margin:2px 0 6px; }
+.rl-tiles.c3 { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.rl-tiles.c2 { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.rl-tile { position:relative; overflow:hidden; background:var(--surface);
+           border:1px solid var(--line); border-radius:var(--r-md);
+           padding:13px 15px 12px; box-shadow:var(--shadow-sm);
+           transition:transform .16s cubic-bezier(.22,1,.36,1), box-shadow .16s,
+                      border-color .16s; }
+.rl-tile:hover { transform:translateY(-2px); box-shadow:var(--shadow-md);
+                 border-color:var(--text-3); }
+.rl-tile::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px;
+                   background:transparent; }
+.rl-tile.ok::before   { background:var(--ok); }
+.rl-tile.warn::before { background:var(--warn); }
+.rl-tile.bad::before  { background:var(--bad); }
+.rl-tile.info::before { background:var(--accent); }
+.rl-tile .l { display:flex; align-items:center; gap:6px; font-size:.67rem; font-weight:600;
+              letter-spacing:.06em; text-transform:uppercase; color:var(--text-3);
+              white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rl-tile .v { font-size:1.6rem; font-weight:750; letter-spacing:-.03em; line-height:1.2;
+              margin-top:7px; color:var(--text); font-variant-numeric:tabular-nums; }
+.rl-tile .v u { text-decoration:none; font-size:.78rem; font-weight:600;
+                color:var(--text-3); margin-left:3px; }
+.rl-tile .d { font-size:.73rem; font-weight:600; color:var(--text-3); margin-top:3px;
+              white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rl-tile .d.up { color:var(--ok); } .rl-tile .d.down { color:var(--bad); }
+.rl-tile svg.spark { display:block; margin-top:8px; width:100%; height:26px; }
+
+/* ── 히어로 (오늘 상태) ─────────────────────────────── */
+.rl-hero { border:1px solid var(--line); border-radius:var(--r-lg); padding:18px 20px 16px;
+           background:linear-gradient(135deg, var(--accent-2) 0%, var(--surface) 62%);
+           box-shadow:var(--shadow-sm); margin-bottom:4px; }
+.rl-hero .t { font-size:2.05rem; font-weight:780; letter-spacing:-.035em; line-height:1.1; }
+.rl-hero .s { color:var(--text-2); font-size:.86rem; margin:6px 0 0; line-height:1.55; }
+.rl-hero .k { display:flex; flex-wrap:wrap; gap:6px 18px; margin-top:12px; }
+.rl-hero .k b { font-variant-numeric:tabular-nums; font-weight:700; color:var(--text); }
+.rl-hero .k span { font-size:.8rem; color:var(--text-3); }
+
+@media (max-width:640px) {
+  .rl-tiles, .rl-tiles.c3 { grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+  .rl-tile { padding:11px 12px 10px; border-radius:var(--r-sm); }
+  .rl-tile .v { font-size:1.32rem; }
+  .rl-hero .t { font-size:1.6rem; }
+}
+
 .rl-divider { height:1px; background:var(--line); margin:26px 0 18px; border:0; }
 
 /* ── 심박존 비교 표 ─────────────────────────────────── */
@@ -391,6 +438,67 @@ def item_list(items: list[tuple[str, str]]) -> None:
     st.markdown("".join(f"<div class='rl-item'><div class='t'>{t}</div>"
                         f"<div class='m'>{m}</div></div>" for t, m in items),
                 unsafe_allow_html=True)
+
+
+def _spark_svg(vals, tone: str = "") -> str:
+    """작은 추세선(스파크라인)을 인라인 SVG로. 값이 2개 미만이면 빈 문자열."""
+    try:
+        pts = [float(v) for v in vals if v is not None and float(v) == float(v)]
+    except (TypeError, ValueError):
+        return ""
+    if len(pts) < 2:
+        return ""
+    pts = pts[-30:]
+    lo, hi = min(pts), max(pts)
+    rng = (hi - lo) or 1.0
+    w, h, pad = 100.0, 26.0, 3.0
+    step = w / (len(pts) - 1)
+    col = {"ok": "var(--ok)", "warn": "var(--warn)", "bad": "var(--bad)"}.get(
+        tone, "var(--accent)")
+    d = " ".join(f"{i * step:.1f},{pad + (h - 2 * pad) * (1 - (v - lo) / rng):.1f}"
+                 for i, v in enumerate(pts))
+    last_x, last_y = d.split(" ")[-1].split(",")
+    return (f"<svg class='spark' viewBox='0 0 {w:.0f} {h:.0f}' preserveAspectRatio='none'>"
+            f"<polyline points='{d}' fill='none' stroke='{col}' stroke-width='1.6' "
+            f"stroke-linecap='round' stroke-linejoin='round' vector-effect='non-scaling-stroke'/>"
+            f"<circle cx='{last_x}' cy='{last_y}' r='1.8' fill='{col}'/></svg>")
+
+
+def tiles(items, per_row_pc: int = 4) -> None:
+    """벤토형 지표 타일 묶음.
+    items = [{"label", "value", "unit"?, "sub"?, "tone"?, "spark"?}, ...]
+      tone : "" | "ok" | "warn" | "bad" | "info"  (왼쪽 악센트 바 색)
+      sub  : '+3.2' 처럼 +/- 로 시작하면 증감색이 붙습니다
+    """
+    cells = ""
+    for it in items:
+        tone = str(it.get("tone") or "")
+        unit = it.get("unit")
+        sub = it.get("sub")
+        dcls = ""
+        if isinstance(sub, str) and sub[:1] in "+-↑↓":
+            dcls = " up" if sub[:1] in "+↑" else " down"
+        cells += (
+            f"<div class='rl-tile {tone}'>"
+            f"<div class='l'>{it.get('label','')}</div>"
+            f"<div class='v'>{it.get('value','—')}"
+            + (f"<u>{unit}</u>" if unit else "") + "</div>"
+            + (f"<div class='d{dcls}'>{sub}</div>" if sub else "")
+            + _spark_svg(it.get("spark") or [], tone)
+            + "</div>")
+    klass = "rl-tiles" + (" c3" if per_row_pc == 3 else " c2" if per_row_pc == 2 else "")
+    st.markdown(f"<div class='{klass}'>{cells}</div>", unsafe_allow_html=True)
+
+
+def hero(title: str, badge_html: str = "", sub: str = "", facts=None) -> None:
+    """맨 위 '오늘 상태' 큰 카드. facts = [(라벨, 값), ...]"""
+    f = "".join(f"<span>{k} <b>{v}</b></span>" for k, v in (facts or []))
+    st.markdown(
+        f"<div class='rl-hero'><div style='display:flex;align-items:center;"
+        f"gap:12px;flex-wrap:wrap'><span class='t'>{title}</span>{badge_html}</div>"
+        + (f"<p class='s'>{sub}</p>" if sub else "")
+        + (f"<div class='k'>{f}</div>" if f else "")
+        + "</div>", unsafe_allow_html=True)
 
 
 def divider() -> None:
