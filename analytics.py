@@ -661,32 +661,126 @@ PR_CATEGORIES = [("1km", 1.0), ("5km", 5.0), ("10km", 10.0),
                  ("Half Marathon", 21.0975), ("Full Marathon", 42.195)]
 
 
-def detect_prs(df_work: pd.DataFrame, tol: float = 0.03) -> pd.DataFrame:
-    """훈련 이력에서 거리별 최고 기록 자동 추출 (거리 ±3% 허용)."""
+def lap_best_efforts(df_laps: pd.DataFrame, categories=None,
+                     max_over: float = 0.25) -> dict:
+    """저장된 랩을 이어 붙여 거리별 최고 구간 기록을 찾습니다.
+
+    1km만 따로 뛰지 않아도, 예를 들어 10km 훈련 안의 가장 빠른 연속 1km를
+    그 거리의 기록으로 인정합니다. 창(window) 거리가 목표보다 길면 시간을
+    비례 축소해 환산합니다(창이 목표의 1+max_over 배를 넘으면 버립니다).
+
+    반환: {종목: {"sec", "date", "workout_id", "km", "laps", "exact"}}
+    """
+    cats = categories or PR_CATEGORIES
+    out: dict = {}
+    if df_laps is None or df_laps.empty:
+        return out
+    d = df_laps.copy()
+    for c in ("DistanceKm", "DurationMinutes", "LapNo"):
+        d[c] = pd.to_numeric(d.get(c), errors="coerce")
+    d["WorkoutDate"] = pd.to_datetime(d.get("WorkoutDate"), errors="coerce")
+    d = d[(d["DistanceKm"] > 0) & (d["DurationMinutes"] > 0)]
+    if d.empty:
+        return out
+
+    for wid, g in d.groupby("WorkoutID"):
+        g = g.sort_values("LapNo")
+        km = g["DistanceKm"].to_numpy(dtype=float)
+        mn = g["DurationMinutes"].to_numpy(dtype=float)
+        nos = g["LapNo"].to_numpy()
+        wdate = g["WorkoutDate"].max()
+        n = len(km)
+        for name, target in cats:
+            if km.sum() < target * 0.999:
+                continue
+            best = None
+            j, dsum, tsum = 0, 0.0, 0.0        # 두 포인터: [i, j) 창
+            for i in range(n):
+                while j < n and dsum < target - 1e-9:
+                    dsum += km[j]
+                    tsum += mn[j]
+                    j += 1
+                if dsum >= target - 1e-9 and dsum <= target * (1 + max_over):
+                    sec = tsum * 60.0 * (target / dsum)
+                    if best is None or sec < best[0]:
+                        best = (sec, dsum, j - i, i, j - 1)
+                dsum -= km[i]                   # 시작점을 한 칸 뒤로
+                tsum -= mn[i]
+            if best is None:
+                continue
+            sec, actual, nlaps, i0, i1 = best
+            cur = out.get(name)
+            if cur is None or sec < cur["sec"]:
+                def _n(v):
+                    try:
+                        return int(float(v))
+                    except (TypeError, ValueError):
+                        return None
+                out[name] = {"sec": float(sec), "date": wdate, "workout_id": wid,
+                             "km": float(actual), "laps": int(nlaps),
+                             "lap_from": _n(nos[i0]), "lap_to": _n(nos[i1]),
+                             "exact": abs(actual - target) <= target * 0.02}
+    return out
+
+
+def detect_prs(df_work: pd.DataFrame, tol: float = 0.03,
+               df_laps: pd.DataFrame = None) -> pd.DataFrame:
+    """거리별 최고 기록 자동 추출.
+    · 훈련 전체 거리가 목표와 ±3% 안에 드는 기록
+    · (df_laps가 있으면) 훈련 안의 가장 빠른 연속 구간 — 1km만 따로 뛸 필요 없음
+    둘 중 빠른 쪽을 채택하고 어디서 나온 기록인지 함께 돌려줍니다."""
     d = prepare_workouts(df_work)
+    laps_best = lap_best_efforts(df_laps) if df_laps is not None else {}
+
+    def _wlabel(row=None, wid=None):
+        """기록이 나온 훈련을 '유형 7.36km'처럼 한 줄로."""
+        r = row
+        if r is None and wid is not None and not d.empty:
+            m = d[d["WorkoutID"].astype(str) == str(wid)]
+            r = m.iloc[0] if not m.empty else None
+        if r is None:
+            return "—"
+        return f"{r.get('WorkoutType', '') or '훈련'} {_num(r.get('DistanceKm'), 0):.2f}km"
+
     rows = []
     for name, dist in PR_CATEGORIES:
-        if d.empty:
-            rows.append({"Category": name, "TimeOrDist": "-", "AchievedDate": "-", "PaceStr": "-"})
+        cand = []                          # (초, 날짜, 출처, 훈련, 메모)
+        if not d.empty:
+            c = d[(d["DistanceKm"] >= dist * (1 - tol)) & (d["DistanceKm"] <= dist * (1 + tol))]
+            if not c.empty:
+                c = c.assign(NormSec=c["DurationMinutes"] * 60.0 * (dist / c["DistanceKm"]))
+                b = c.loc[c["NormSec"].idxmin()]
+                cand.append((float(b["NormSec"]), b["WorkoutDate"], "훈련 전체",
+                             _wlabel(row=b), ""))
+        lb = laps_best.get(name)
+        if lb is not None and pd.notna(lb["date"]):
+            rng = (f"랩 {lb['lap_from']}~{lb['lap_to']}"
+                   if lb.get("lap_from") is not None and lb["lap_from"] != lb["lap_to"]
+                   else (f"랩 {lb['lap_from']}" if lb.get("lap_from") is not None else ""))
+            note = " · ".join([x for x in
+                               [rng, "" if lb["exact"] else f"{lb['km']:.2f}km 환산"] if x])
+            cand.append((lb["sec"], lb["date"], f"구간 {lb['laps']}랩",
+                         _wlabel(wid=lb["workout_id"]), note))
+        if not cand:
+            rows.append({"Category": name, "TimeOrDist": "-", "AchievedDate": "-",
+                         "PaceStr": "-", "Source": "-", "Workout": "-", "Note": ""})
             continue
-        c = d[(d["DistanceKm"] >= dist * (1 - tol)) & (d["DistanceKm"] <= dist * (1 + tol))]
-        if c.empty:
-            rows.append({"Category": name, "TimeOrDist": "-", "AchievedDate": "-", "PaceStr": "-"})
-            continue
-        # 거리 정규화 후 최속
-        c = c.assign(NormSec=c["DurationMinutes"] * 60.0 * (dist / c["DistanceKm"]))
-        best = c.loc[c["NormSec"].idxmin()]
+        sec, dt, src, wlab, note = min(cand, key=lambda x: x[0])
         rows.append({
             "Category": name,
-            "TimeOrDist": time_str(best["NormSec"]),
-            "AchievedDate": best["WorkoutDate"].strftime("%Y-%m-%d"),
-            "PaceStr": pace_str(best["NormSec"] / dist),
+            "TimeOrDist": time_str(sec),
+            "AchievedDate": pd.Timestamp(dt).strftime("%Y-%m-%d"),
+            "PaceStr": pace_str(sec / dist),
+            "Source": src,
+            "Workout": wlab,
+            "Note": note,
         })
     if not d.empty:
         lr = d.loc[d["DistanceKm"].idxmax()]
         rows.append({"Category": "Longest Run", "TimeOrDist": f"{lr['DistanceKm']:.2f} km",
                      "AchievedDate": lr["WorkoutDate"].strftime("%Y-%m-%d"),
-                     "PaceStr": pace_str(_num(lr["PaceSec"], np.nan))})
+                     "PaceStr": pace_str(_num(lr["PaceSec"], np.nan)),
+                     "Source": "훈련 전체", "Workout": _wlabel(row=lr), "Note": ""})
     return pd.DataFrame(rows)
 
 
@@ -979,7 +1073,7 @@ HILL_TIERS = [(1, "Recreational", "레크리에이션"), (25, "Challenger", "챌
               (50, "Trained", "훈련됨"), (70, "Skilled", "숙련"),
               (85, "Expert", "엑스퍼트"), (95, "Elite", "엘리트")]
 
-_TIER_TONE = ["", "", "ok", "ok", "good", "good", "good"]
+_TIER_TONE = ["", "", "info", "info", "ok", "ok", "ok"]
 
 
 def _endurance_bracket(sex: str, age) -> tuple[int, list[int]]:
