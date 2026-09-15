@@ -312,6 +312,33 @@ def only_measure_rows(df: pd.DataFrame) -> pd.DataFrame:
     return df[has_measure_values(df)]
 
 
+# 날짜 축 — 하루보다 촘촘한 눈금(‘12 PM’)이 생기지 않게 최소 간격을 강제합니다.
+_DAY_MS = 86400000
+
+# 차트 기간 선택 (None = 전체)
+RANGE_DAYS = {"2주": 14, "1개월": 30, "3개월": 90, "6개월": 180, "1년": 365, "전체": None}
+
+
+def _span_days(sr) -> int:
+    """날짜 시리즈가 걸쳐 있는 일수 (눈금 간격 결정용)."""
+    try:
+        d = pd.to_datetime(pd.Series(sr), errors="coerce").dropna()
+        return int((d.max() - d.min()).days) + 1 if len(d) > 1 else 1
+    except Exception:
+        return 30
+
+
+def date_axis(n_days: int, title=None):
+    """구간 길이에 맞춰 날짜 눈금 형식·간격을 고릅니다."""
+    if n_days <= 45:
+        return alt.Axis(title=title, format="%m/%d", tickMinStep=_DAY_MS)
+    if n_days <= 150:
+        return alt.Axis(title=title, format="%m/%d", tickMinStep=_DAY_MS * 7)
+    if n_days <= 400:
+        return alt.Axis(title=title, format="%Y/%m", tickMinStep=_DAY_MS * 28)
+    return alt.Axis(title=title, format="%Y/%m", tickMinStep=_DAY_MS * 90)
+
+
 RACE_DIST_KM = {"5km": 5.0, "10km": 10.0, "Half Marathon": 21.0975, "Full Marathon": 42.195}
 
 
@@ -747,17 +774,22 @@ with tab_dash:
 
     with ui.card("curve"):
         ui.head("📉 계산 부하 곡선", "CTL(체력) / ATL(피로) / TSB(폼)")
-        show = daily.tail(120 if ui.is_mobile() else 180).reset_index(names="Date")
+        rsel = st.radio("기간", list(RANGE_DAYS), index=2, horizontal=True,
+                        key="curve_range", label_visibility="collapsed")
+        rn = RANGE_DAYS[rsel]
+        show = (daily if rn is None else daily.tail(rn)).reset_index(names="Date")
         if show["CTL"].sum() > 0:
+            xax = date_axis(len(show))
             long = show.melt("Date", ["CTL", "ATL"], var_name="지표", value_name="값")
             area = alt.Chart(show).mark_area(opacity=.16, color="#2563eb").encode(
-                x=alt.X("Date:T", title=None), y=alt.Y("TSB:Q", title="TSB"))
+                x=alt.X("Date:T", title=None, axis=xax), y=alt.Y("TSB:Q", title="TSB"))
             line = alt.Chart(long).mark_line(strokeWidth=2).encode(
-                x=alt.X("Date:T", title=None),
+                x=alt.X("Date:T", title=None, axis=xax),
                 y=alt.Y("값:Q", title="부하"),
                 color=alt.Color("지표:N", scale=alt.Scale(
                     domain=["CTL", "ATL"], range=["#2563eb", "#f97316"]), title=None),
-                tooltip=["Date:T", "지표:N", alt.Tooltip("값:Q", format=".1f")])
+                tooltip=[alt.Tooltip("Date:T", title="날짜", format="%Y-%m-%d"),
+                         "지표:N", alt.Tooltip("값:Q", format=".1f")])
             st.altair_chart(alt.layer(line, area).resolve_scale(y="independent")
                             .properties(height=ui.chart_height(300, 220)), width="stretch")
         else:
@@ -1087,7 +1119,7 @@ with tab_work:
                         order = ["무리한 훈련", "과훈련", "비생산적", "트레이닝 부족",
                                  "회복", "유지", "생산적", "피킹"]
                         st.altair_chart(alt.Chart(tl).mark_circle(size=110, opacity=.85).encode(
-                            x=alt.X("StatusDate:T", title=None, axis=alt.Axis(format="%m/%d")),
+                            x=alt.X("StatusDate:T", title=None, axis=date_axis(_span_days(tl["StatusDate"]))),
                             y=alt.Y("상태:N", sort=order, title=None),
                             color=alt.Color("상태:N", sort=order, legend=None,
                                             scale=alt.Scale(scheme="redyellowgreen")),
@@ -1103,13 +1135,13 @@ with tab_work:
                     if not ld.empty:
                         bars = alt.Chart(ld).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3,
                                                       color="#2563eb", opacity=.75).encode(
-                            x=alt.X("StatusDate:T", title=None),
+                            x=alt.X("StatusDate:T", title=None, axis=date_axis(_span_days(ld["StatusDate"]))),
                             y=alt.Y("AcuteLoad:Q", title="Acute Load",
                                     axis=alt.Axis(format=",d", tickMinStep=1)),
                             tooltip=["StatusDate:T", "AcuteLoad:Q", "LoadRatio:Q"])
                         ln = alt.Chart(ld).mark_line(color="#f97316", strokeWidth=2.5,
                                                      point=True).encode(
-                            x=alt.X("StatusDate:T", title=None),
+                            x=alt.X("StatusDate:T", title=None, axis=date_axis(_span_days(ld["StatusDate"]))),
                             y=alt.Y("LoadRatio:Q", title="Load Ratio",
                                     axis=alt.Axis(format=".2f")))
                         band = alt.Chart(pd.DataFrame({"lo": [0.8], "hi": [1.5]})).mark_rect(
@@ -1128,7 +1160,8 @@ with tab_work:
                                       var_name="지표", value_name="값").dropna()
                         if not hv.empty:
                             st.altair_chart(alt.Chart(hv).mark_line(point=True, strokeWidth=2).encode(
-                                x=alt.X("StatusDate:T", title=None),
+                                x=alt.X("StatusDate:T", title=None,
+                                        axis=date_axis(_span_days(gdv["StatusDate"]))),
                                 y=alt.Y("값:Q", title=None, scale=alt.Scale(zero=False),
                                         axis=alt.Axis(format=",d", tickMinStep=1)),
                                 color=alt.Color("지표:N", title=None)
@@ -1142,7 +1175,8 @@ with tab_work:
                                       var_name="지표", value_name="값").dropna()
                         if not rv.empty:
                             st.altair_chart(alt.Chart(rv).mark_line(point=True, strokeWidth=2).encode(
-                                x=alt.X("StatusDate:T", title=None),
+                                x=alt.X("StatusDate:T", title=None,
+                                        axis=date_axis(_span_days(gdv["StatusDate"]))),
                                 y=alt.Y("값:Q", title=None, scale=alt.Scale(zero=False),
                                         axis=alt.Axis(format=",d", tickMinStep=1)),
                                 color=alt.Color("지표:N", title=None)
@@ -1195,7 +1229,7 @@ with tab_work:
                                 st.altair_chart(alt.Chart(sub).mark_line(
                                     point=True, strokeWidth=2.5, color=color).encode(
                                     x=alt.X("MetricDate:T", title=None,
-                                            axis=alt.Axis(format="%m/%d")),
+                                            axis=date_axis(_span_days(gmv["MetricDate"]))),
                                     y=alt.Y(f"{col}:Q", title=None,
                                             scale=alt.Scale(zero=False),
                                             axis=alt.Axis(format=fmt, tickMinStep=step)),
@@ -1337,7 +1371,8 @@ with tab_work:
                 else:
                     pts = alt.Chart(tr).mark_circle(size=70, opacity=.5,
                                                     color="#2563eb").encode(
-                        x=alt.X("WorkoutDate:T", title=None),
+                        x=alt.X("WorkoutDate:T", title=None,
+                                axis=date_axis(_span_days(tr["WorkoutDate"]))),
                         y=alt.Y("페이스(분/km):Q", scale=alt.Scale(zero=False, reverse=True)),
                         size=alt.Size("DistanceKm:Q", legend=None),
                         tooltip=["WorkoutDate:T", "페이스(분/km):Q", "AvgHeartRate:Q"])
@@ -1428,7 +1463,9 @@ with tab_work:
                     if not ef.empty:
                         st.altair_chart(alt.Chart(ef).mark_circle(size=45, opacity=.45,
                                                                   color="#2563eb").encode(
-                            x=alt.X("WorkoutDate:T", title=None), y=alt.Y("EF:Q", title="EF",
+                            x=alt.X("WorkoutDate:T", title=None,
+                                    axis=date_axis(_span_days(ef["WorkoutDate"]))),
+                            y=alt.Y("EF:Q", title="EF",
                                                                           scale=alt.Scale(zero=False)),
                             tooltip=["WorkoutDate:T", alt.Tooltip("EF:Q", format=".3f")])
                             .properties(height=ui.chart_height(200, 180))
@@ -2310,7 +2347,7 @@ with tab_admin:
                         if not sub.empty:
                             st.altair_chart(alt.Chart(sub).mark_line(
                                 point=True, strokeWidth=2.5, color=color).encode(
-                                x=alt.X("Date:T", title=None),
+                                x=alt.X("Date:T", title=None, axis=date_axis(_span_days(sub["Date"]))),
                                 y=alt.Y(f"{col}:Q", title=None,
                                         scale=alt.Scale(zero=False),
                                         axis=alt.Axis(format=fmt, tickMinStep=step)),
@@ -2378,7 +2415,7 @@ with tab_admin:
                                var_name="지표", value_name="값").dropna()
                 if not long.empty:
                     st.altair_chart(alt.Chart(long).mark_line(point=True, strokeWidth=2).encode(
-                        x=alt.X("StatusDate:T", title=None),
+                        x=alt.X("StatusDate:T", title=None, axis=date_axis(_span_days(dv["StatusDate"]))),
                         y=alt.Y("값:Q", title=None,
                                 axis=alt.Axis(format=",d", tickMinStep=1)),
                         color=alt.Color("지표:N", title=None)).properties(
@@ -2485,7 +2522,7 @@ with tab_admin:
                         if not sub.empty:
                             st.altair_chart(alt.Chart(sub).mark_line(
                                 point=True, strokeWidth=2.5, color="#2563eb").encode(
-                                x=alt.X("MetricDate:T", title=None),
+                                x=alt.X("MetricDate:T", title=None, axis=date_axis(_span_days(sub["MetricDate"]))),
                                 y=alt.Y(f"{col}:Q", title=None,
                                         scale=alt.Scale(zero=False),
                                         axis=alt.Axis(format=fmt, tickMinStep=step)),
