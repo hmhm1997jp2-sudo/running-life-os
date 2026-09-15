@@ -25,19 +25,38 @@ import analytics as ana
 # ── 파일 버전 불일치 방지 ──────────────────────────────────────────────
 # app.py 만 올리고 나머지를 빠뜨리면 AttributeError 가 납니다.
 # 원인을 바로 알 수 있도록 시작 시점에 검사합니다.
+# 파일 버전 불일치 가드 — app.py가 실제로 쓰는 이름을 전부 확인합니다.
+# (목록 갱신: python tools/refresh_required.py 또는 app.py의 ana./db./ui. 사용처를 재수집)
 _REQUIRED = {
-    "analytics.py": (ana, ["DEFAULT_ZONE_MODEL", "ZONE_MODELS", "assign_zones",
-                           "lthr_history", "zone_bounds", "zone_table", "zone_history",
-                           "zone_pace_trend", "latest_garmin", "garmin_alerts",
-                           "status_meta", "load_focus"]),
-    "ui.py":        (ui, ["boot", "card", "head", "pill", "rows", "bar",
-                          "item_list", "metrics", "cols", "chart_height", "divider"]),
-    "db.py":        (db, ["init_db", "load_data", "append_rows", "write_sheet",
-                          "get_athlete", "save_athlete", "export_excel_bytes",
-                          "reset_db", "backend_name"]),
+    "analytics.py": (ana, ["BELOW_Z1", "DEFAULT_ZONE_MODEL", "LAP_ROLES", "PRIMARY_BENEFIT",
+                          "PR_CATEGORIES", "TRAINING_STATUS", "TRAINING_STATUS_KR",
+                          "ZONE_MODELS", "age_from_birth", "assign_zones", "build_alerts",
+                          "classify_laps", "daily_load_series", "decoupling",
+                          "decoupling_verdict", "detect_prs", "effective_vo2max",
+                          "efficiency_factor", "endurance_meta", "garmin_alerts",
+                          "garmin_race_predictions", "garmin_vs_computed", "hill_meta",
+                          "intensity_distribution", "interval_shape", "lap_role_summary",
+                          "latest_garmin", "load_focus", "load_ratio_meta", "load_summary",
+                          "pace_str", "parse_time_str", "predict_time", "prepare_workouts",
+                          "profile_changes", "profile_history", "race_plan", "recovery_meta",
+                          "resolve_lthr", "stage_to_role", "status_meta", "time_str",
+                          "training_paces", "vdot_from_performance", "weekly_summary",
+                          "zone_bounds", "zone_history", "zone_pace_trend", "zone_segments",
+                          "zone_table"]),
+    "ui.py":        (ui, ["bar", "boot", "card", "chart_height", "cols", "head", "is_mobile",
+                          "item_list", "metrics", "mode_switch", "pill", "rows"]),
+    "db.py":        (db, ["append_rows", "backend_name", "diagnose", "export_excel_bytes",
+                          "get_athlete", "init_db", "load_data", "repair", "repair_preview",
+                          "reset_db", "save_athlete", "write_sheet"]),
 }
 _stale = [(f, [a for a in attrs if not hasattr(m, a)]) for f, (m, attrs) in _REQUIRED.items()
           if [a for a in attrs if not hasattr(m, a)]]
+# 스키마에 있어야 하는 컬럼 (함수 이름만으로는 잡히지 않는 버전 차이)
+_need_cols = {"Laps": ["LapRole"]}
+_miss_cols = [f"{sh}.{c}" for sh, cs in _need_cols.items()
+              for c in cs if c not in getattr(db, "SCHEMA", {}).get(sh, [])]
+if _miss_cols:
+    _stale.append(("db.py", [f"스키마 컬럼 {c}" for c in _miss_cols]))
 if _stale:
     st.error("⚠️ 파일 버전이 서로 맞지 않습니다. 아래 파일을 최신 내용으로 다시 올려주세요.")
     for f, miss in _stale:
