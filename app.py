@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, date, time as dtime
 
 import numpy as np
 import pandas as pd
+import unicodedata
+
 import streamlit as st
 
 st.set_page_config(page_title="Running Life OS", page_icon="🏃",
@@ -46,12 +48,12 @@ _REQUIRED = {
                            "training_paces", "vdot_from_performance", "weekly_summary",
                            "zone_bounds", "zone_history", "zone_pace_trend", "zone_segments",
                            "zone_table"]),
-    "ui.py":        (ui, ["alerts", "bar", "boot", "card", "chart_height", "cols", "head",
-                          "hero", "is_dark", "is_mobile", "item_list", "metrics",
-                          "mode_switch", "pill", "rows", "tiles"]),
+    "ui.py":        (ui, ["bar", "boot", "card", "chart_height", "cols", "head", "hero",
+                          "is_dark", "is_mobile", "item_list", "metrics", "mode_switch",
+                          "pill", "rows", "tiles"]),
     "db.py":        (db, ["append_rows", "backend_name", "diagnose", "export_excel_bytes",
-                          "get_athlete", "init_db", "load_data", "repair",
-                          "repair_preview", "reset_db", "save_athlete", "write_sheet"]),
+                          "get_athlete", "init_db", "load_data", "repair", "repair_preview",
+                          "reset_db", "save_athlete", "write_sheet"]),
 }
 _stale = [(f, [a for a in attrs if not hasattr(m, a)]) for f, (m, attrs) in _REQUIRED.items()
           if [a for a in attrs if not hasattr(m, a)]]
@@ -650,6 +652,38 @@ def grid_at(cols, i: int, n: int):
     return cols[min(i // per, k - 1)]
 
 
+_ALERT_TONE = {"error": ("bad", "\u26a0\ufe0f"), "warning": ("warn", "\u26a0\ufe0f"),
+               "info": ("info", "\u2139\ufe0f"), "success": ("info", "\u2705")}
+_ALERT_COLOR = {"bad": "var(--bad)", "warn": "var(--warn)", "info": "var(--accent)"}
+
+
+def render_alerts(items) -> None:
+    """체크포인트 줄.
+
+    ui.py 에 alerts()가 있으면 그걸 쓰고, 없으면(= ui.py 가 예전 버전이면)
+    같은 모양을 여기서 직접 그립니다. 보기용 도우미 하나 때문에 앱 전체가
+    멈추면 곤란하니, 이런 것은 '없으면 대신 그리는' 쪽으로 둡니다.
+    """
+    fn = getattr(ui, "alerts", None)
+    if callable(fn):
+        fn(items)
+        return
+    html = ""
+    for a in items:
+        t, ic = _ALERT_TONE.get(str(a.get("level", "info")), ("info", "\u2139\ufe0f"))
+        msg = str(a.get("msg", ""))
+        if msg[:1] and unicodedata.category(msg[0]) == "So":
+            ic = ""
+        html += (
+            "<div style='display:flex;gap:10px;align-items:flex-start;"
+            "padding:10px 12px;border-radius:10px;background:var(--surface-2);"
+            f"border-left:3px solid {_ALERT_COLOR[t]};margin-bottom:7px;"
+            "font-size:.86rem;line-height:1.5;color:var(--text)'>"
+            + (f"<span style='line-height:1.45'>{ic}</span>" if ic else "")
+            + f"<span>{msg}</span></div>")
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def dday_tag(days) -> str:
     """한국식 D-day 표기. 남은 날은 D-41, 당일은 D-DAY, 지난 날은 '41일 지남'.
     (D+는 '지났다'는 뜻이라 남은 날에 쓰면 반대로 읽힙니다.)"""
@@ -1023,7 +1057,7 @@ with tab_today:
     if alerts:
         with ui.card("alerts"):
             ui.head("🔔 오늘의 체크포인트")
-            ui.alerts(alerts[:6])
+            render_alerts(alerts[:6])
 
     # ─────────────────────────────────────────────────────────────────
     # 이번 주 — 가장 자주 보게 되는 숫자라 맨 위에 둡니다
