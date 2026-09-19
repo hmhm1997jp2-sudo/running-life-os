@@ -239,6 +239,69 @@ DEFAULT_ZONE_MODEL = "%LTHR"
 BELOW_Z1 = "존 미만"
 ZONE_NAMES = lambda model: [n for n, _, _ in ZONE_MODELS[model]]
 
+# 가민 시계는 활동별(러닝/사이클/…)로 따로 심박존을 둘 수 있고, 러닝 존은
+# 기본 존과 다르게(보통 조금 높게) 잡히는 경우가 많습니다.
+# 시계에 설정된 러닝 존을 그대로 등록해서 앱 판정을 시계와 맞춥니다.
+WATCH_MODEL = "⌚ 시계 러닝 존"
+_LTHR_BASED = ("%LTHR", WATCH_MODEL)
+
+
+def parse_zone_pcts(text) -> list[float]:
+    """'68,80,89,94,99,114' 또는 [68, 80, …] → [68.0, …].
+    형식이 맞지 않으면 빈 목록."""
+    if text is None:
+        return []
+    try:
+        if isinstance(text, (list, tuple)):
+            v = [float(x) for x in text]
+        else:
+            v = [float(x) for x in str(text).replace(" ", "").split(",") if x != ""]
+    except (TypeError, ValueError):
+        return []
+    if len(v) != 6 or any(v[i] >= v[i + 1] for i in range(5)) or v[0] <= 0:
+        return []
+    return v
+
+
+def set_watch_zones(pcts) -> bool:
+    """시계 러닝 존 경계(%LTHR, 6개 · 오름차순)를 등록. 성공하면 True."""
+    v = parse_zone_pcts(pcts)
+    if not v:
+        clear_watch_zones()
+        return False
+    names = [n for n, _, _ in ZONE_MODELS["%LTHR"]]
+    spec = [(names[i], v[i] / 100.0, v[i + 1] / 100.0) for i in range(5)]
+    # 시계 값을 맨 앞에 둬서 기본으로 보이게 합니다.
+    rest = {k: val for k, val in ZONE_MODELS.items() if k != WATCH_MODEL}
+    ZONE_MODELS.clear()
+    ZONE_MODELS[WATCH_MODEL] = spec
+    ZONE_MODELS.update(rest)
+    return True
+
+
+def clear_watch_zones() -> None:
+    ZONE_MODELS.pop(WATCH_MODEL, None)
+
+
+def has_watch_zones() -> bool:
+    return WATCH_MODEL in ZONE_MODELS
+
+
+def preferred_zone_model() -> str:
+    """시계 존이 등록돼 있으면 그것을, 아니면 %LTHR을 기본으로."""
+    return WATCH_MODEL if has_watch_zones() else DEFAULT_ZONE_MODEL
+
+
+def bpm_to_pct(bpm_list, lthr) -> list[float]:
+    """시계에 표시된 bpm 경계 → %LTHR. LTHR이 바뀌어도 따라가도록."""
+    base = _num(lthr, 0.0)
+    if base <= 0:
+        return []
+    try:
+        return [round(float(b) / base * 100, 1) for b in bpm_list]
+    except (TypeError, ValueError):
+        return []
+
 
 def resolve_lthr(lthr=None, hr_max=None) -> float:
     """LTHR 확정값. 미입력이면 최대심박의 90%로 추정."""
@@ -254,7 +317,7 @@ def zone_bounds(model: str = DEFAULT_ZONE_MODEL, lthr=None,
     """특정 시점 기준의 5존 경계(bpm). 화면에 '현재 존표'를 보여줄 때 사용."""
     spec = ZONE_MODELS.get(model, ZONE_MODELS[DEFAULT_ZONE_MODEL])
     hr_max, hr_rest = _num(hr_max, 0.0), _num(hr_rest, 0.0)
-    if model == "%LTHR":
+    if model in _LTHR_BASED:
         base = resolve_lthr(lthr, hr_max)
         return [(n, base * lo, base * hi) for n, lo, hi in spec] if base > 0 else []
     if model == "%HRmax":
@@ -361,7 +424,7 @@ def assign_zones(df_work: pd.DataFrame, model: str = DEFAULT_ZONE_MODEL,
         hr = _num(hr, 0.0)
         if hr <= 0:
             return BELOW_Z1
-        if model == "%LTHR":
+        if model in _LTHR_BASED:
             base = _num(lthr_u, 0.0) or resolve_lthr(None, max_u)
             if base <= 0:
                 return BELOW_Z1
@@ -431,23 +494,30 @@ def intensity_distribution(zoned: pd.DataFrame, model: str = DEFAULT_ZONE_MODEL,
     pol = {k: (round(v / tot * 100, 1) if tot else 0.0)
            for k, v in [("low", low), ("mid", mid), ("high", high)]}
 
+    # 판정은 '무엇이 가장 많이 어긋났는지'로 결정합니다.
+    # (예전 코드는 저강도가 낮기만 하면 고강도가 5%여도 '고강도 편중'이라고 했습니다)
     if tot == 0:
-        verdict = "데이터 부족"
+        verdict, vtone = "데이터 부족", ""
     elif pol["low"] >= 78 and pol["mid"] <= 12:
-        verdict = "✅ 폴라라이즈드 (80/20 준수)"
+        verdict, vtone = "✅ 폴라라이즈드 (80/20 준수)", "ok"
+    elif pol["high"] >= 20:
+        verdict, vtone = "🚨 고강도 편중 — 이지런 비중을 늘릴 것", "bad"
+    elif pol["mid"] >= 25:
+        verdict, vtone = ("⚠️ 회색지대(Gray Zone) 과다 — 이지런은 더 느리게, "
+                          "포인트 훈련은 더 확실하게"), "warn"
     elif pol["low"] >= 78:
-        verdict = "피라미드형 — 중강도 비중 다소 높음"
+        verdict, vtone = "피라미드형 — 중강도 비중이 조금 높습니다", "ok"
     elif pol["low"] >= 65:
-        verdict = "⚠️ 임계형(Threshold) — 회색지대(Gray Zone) 과다"
+        verdict, vtone = "무난 — 저강도를 조금 더 늘리면 좋습니다", "warn"
     else:
-        verdict = "🚨 고강도 편중 — 이지런 비중을 늘릴 것"
+        verdict, vtone = "⚠️ 저강도 부족 — 이지런 비중을 늘릴 것", "warn"
 
     return {
         "model": model,
         "zone_minutes": {k: round(v, 1) for k, v in dist.items()},
         "zone_pct": {k: (round(v / total * 100, 1) if total else 0.0)
                      for k, v in dist.items()},
-        "polarized_pct": pol, "verdict": verdict,
+        "polarized_pct": pol, "verdict": verdict, "verdict_tone": vtone,
         "total_minutes": round(tot, 1),
     }
 
@@ -961,7 +1031,8 @@ def latest_garmin(df_daily: pd.DataFrame, df_metrics: pd.DataFrame) -> dict:
     out = {}
     daily_fields = ["TrainingStatus", "AcuteLoad", "LoadRatio", "RecoveryTimeHr",
                     "TrainingReadiness", "BodyBattery", "HRVStatus", "HRVms",
-                    "SleepScore", "RestingHR", "IntensityMinutes"]
+                    "SleepScore", "RestingHR", "IntensityMinutes",
+                    "MeasuredAt", "RecoveryUntil"]
     weekly_fields = ["VO2Max", "FitnessAge", "EnduranceScore", "HillScore",
                      "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
                      "Pred5K", "Pred10K", "PredHalf", "PredFull",
@@ -992,6 +1063,28 @@ def load_ratio_meta(ratio) -> tuple[str, str]:
     if r <= 1.5:
         return "ok", "최적 구간"
     return "bad", "부하 과다 — 회복 우선"
+
+
+def recovery_remaining(g: dict, now=None):
+    """회복 시간은 훈련 종료 시점부터 계속 줄어드는 카운트다운입니다.
+    입력할 때 함께 저장한 '회복 완료 예상 시각'으로 **지금 기준 남은 시간**을 다시
+    계산합니다. 완료 시각이 없으면(예전 기록) 입력값을 그대로 돌려줍니다.
+
+    반환: (남은시간h, 원래입력값h, 완료시각텍스트, 재계산했는지)
+    """
+    raw = _num(g.get("RecoveryTimeHr"), np.nan)
+    until = str(g.get("RecoveryUntil") or "").strip()
+    if not until:
+        return raw, raw, "", False
+    try:
+        u = pd.to_datetime(until, errors="coerce")
+        if pd.isna(u):
+            return raw, raw, "", False
+    except Exception:
+        return raw, raw, "", False
+    ref = pd.Timestamp(now) if now is not None else pd.Timestamp.now()
+    left = max(0.0, (u - ref).total_seconds() / 3600.0)
+    return left, raw, u.strftime("%m/%d %H:%M"), True
 
 
 def recovery_meta(hours) -> tuple[str, str]:
