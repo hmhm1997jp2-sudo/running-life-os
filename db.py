@@ -28,8 +28,10 @@ EXCEL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # 스키마 정의 — 여기에 컬럼을 추가하면 자동으로 시트에도 반영됩니다.
 # ---------------------------------------------------------------------------
 SCHEMA: dict[str, list[str]] = {
+    # ※ 새 컬럼은 반드시 맨 뒤에 추가할 것
     "Athlete": ["AthleteID", "Name", "BirthDate", "Sex", "HeightCm",
-                "CurrentWeightKg", "StartWeightKg", "HRRest", "HRMax", "LTHR"],
+                "CurrentWeightKg", "StartWeightKg", "HRRest", "HRMax", "LTHR",
+                "RunZonePct"],
     "Projects": ["ProjectID", "ProjectName", "Status", "GoalType", "GoalValue",
                  "StartDate", "TargetDate", "Description"],
     "Workouts": ["WorkoutID", "ProjectID", "WorkoutDate", "WorkoutType", "DistanceKm",
@@ -38,12 +40,17 @@ SCHEMA: dict[str, list[str]] = {
                  "AerobicTE", "AnaerobicTE", "PrimaryBenefit",
                  # 러닝 다이나믹스 (가민 활동 상세 CSV에서 자동 입력)
                  "Calories", "AvgGCTms", "AvgStrideM", "AvgVertOscCm", "AvgVertRatioPct",
-                 "RPE", "LegFatigue", "CardioFatigue", "Notes", "SourceKey"],
+                 "RPE", "LegFatigue", "CardioFatigue", "Notes", "SourceKey",
+                 # 아래는 맨 뒤에 추가된 항목 — 순서를 바꾸지 말 것
+                 "ElevLossM", "GapPaceSec", "NormPower", "MaxPaceSec", "MaxCadence",
+                 "MovingMinutes"],
     # ── 가민 일일 지표 (Connect 홈에서 매일 보이는 값) ──────────────────────
     "DailyStatus": ["StatusID", "StatusDate", "TrainingStatus", "AcuteLoad", "LoadRatio",
                     "RecoveryTimeHr", "TrainingReadiness", "BodyBattery",
                     "HRVStatus", "HRVms", "SleepScore", "RestingHR",
-                    "IntensityMinutes", "Notes"],
+                    "IntensityMinutes", "Notes",
+                    # 맨 뒤에 추가 — 입력 시각과 회복 완료 예상 시각
+                    "MeasuredAt", "RecoveryUntil"],
     # ── 프로필·지표 변경 이력 (날짜별 스냅샷) ─────────────────────────────
     #    체중/심박/LTHR 이 바뀐 시점을 남기면 과거 훈련은 그 시점 값으로 계산됩니다.
     "Metrics": ["MetricID", "MetricDate", "HRRest", "HRMax", "VO2Max", "FitnessAge",
@@ -63,7 +70,10 @@ SCHEMA: dict[str, list[str]] = {
              "PaceSec", "AvgHeartRate", "MaxHeartRate", "AvgPower", "AvgCadence",
              "ElevGainM", "ElevLossM", "AvgGCTms", "AvgStrideM",
              "AvgVertOscCm", "AvgVertRatioPct", "Calories", "TempC",
-             "LapRole"],
+             "LapRole",
+             # 가민 활동 상세 CSV의 나머지 랩 항목 (맨 뒤에 추가)
+             "GapPaceSec", "NormPower", "AvgWkg", "MaxPower", "MaxWkg",
+             "MaxPaceSec", "MaxCadence", "MovingMinutes", "MovingPaceSec"],
     "CoachNotes": ["NoteID", "ProjectID", "NoteDate", "Category", "NoteText"],
     "TrainingPlans": ["PlanID", "PlanDate", "GarminPlan", "CopilotPlan",
                       "SelectedPlan", "Status", "Notes"],
@@ -261,7 +271,7 @@ def repair(sheet: str, legacy_len: int) -> dict:
 DEFAULT_ATHLETE = {
     "AthleteID": "ATH-001", "Name": "Runner", "BirthDate": "", "Sex": "M",
     "HeightCm": 180, "CurrentWeightKg": 85.0, "StartWeightKg": 115.0,
-    "HRRest": 55, "HRMax": 190, "LTHR": 170,
+    "HRRest": 55, "HRMax": 190, "LTHR": 170, "RunZonePct": "",
 }
 
 
