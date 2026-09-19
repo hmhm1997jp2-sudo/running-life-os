@@ -96,6 +96,9 @@ NUMERIC_COLS = {
     "LapNo", "ElevGainM", "ElevLossM",
     "Calories", "AvgGCTms", "AvgStrideM", "AvgVertOscCm", "AvgVertRatioPct", "TempC",
     "CumMinutes",
+    # CSV 랩 상세에서 함께 들어오는 숫자 항목
+    "GapPaceSec", "NormPower", "AvgWkg", "MaxPower", "MaxWkg",
+    "MaxPaceSec", "MaxCadence", "MovingMinutes", "MovingPaceSec",
 }
 
 # ---------------------------------------------------------------------------
