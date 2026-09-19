@@ -18,6 +18,8 @@ app.py 에서:
 from __future__ import annotations
 
 import re
+import unicodedata
+
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -296,8 +298,8 @@ div[data-testid="stAlert"] { border-radius:var(--r-md); border:1px solid var(--l
 .rl-tile.warn::before { background:var(--warn); }
 .rl-tile.bad::before  { background:var(--bad); }
 .rl-tile.info::before { background:var(--accent); }
-.rl-tile .l { display:flex; align-items:center; gap:6px; font-size:.67rem; font-weight:600;
-              letter-spacing:.06em; text-transform:uppercase; color:var(--text-3);
+.rl-tile .l { display:flex; align-items:center; gap:6px; font-size:.72rem; font-weight:650;
+              letter-spacing:.005em; color:var(--text-3);
               white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .rl-tile .v { font-size:1.6rem; font-weight:750; letter-spacing:-.03em; line-height:1.2;
               margin-top:7px; color:var(--text); font-variant-numeric:tabular-nums; }
@@ -348,11 +350,29 @@ div[data-testid="stAlert"] { border-radius:var(--r-md); border:1px solid var(--l
 .rl-zdot { width:9px; height:9px; border-radius:3px; display:inline-block;
            margin-right:9px; vertical-align:middle; }
 
+/* ── 알림 줄 (체크포인트) ───────────────────────────── */
+.rl-alert { display:flex; gap:10px; align-items:flex-start; padding:10px 12px;
+            border-radius:var(--r-sm); background:var(--surface-2);
+            border-left:3px solid var(--text-3); margin-bottom:7px;
+            font-size:.86rem; line-height:1.5; color:var(--text); }
+.rl-alert:last-child { margin-bottom:0; }
+.rl-alert.bad  { border-left-color:var(--bad); }
+.rl-alert.warn { border-left-color:var(--warn); }
+.rl-alert.info { border-left-color:var(--accent); }
+.rl-alert .ic  { flex:0 0 auto; line-height:1.45; }
+
 /* ── 존 막대 (bpm 축 위의 구간) ─────────────────────── */
-.rl-zbar { display:flex; height:44px; border-radius:12px; overflow:hidden;
-           border:1px solid var(--line); }
+/* 조각 사이는 테두리가 아니라 배경색 2px 틈으로 가릅니다 —
+   테두리를 두르면 데이터가 아닌 잉크가 늘어납니다. */
+.rl-zbar { display:flex; gap:2px; height:40px; }
 .rl-zbar > div { display:flex; flex-direction:column; align-items:center;
-                 justify-content:center; gap:1px; min-width:0; padding:0 2px; }
+                 justify-content:center; gap:1px; min-width:0; padding:0 2px;
+                 border-radius:5px; overflow:hidden; }
+.rl-zbar .zn, .rl-zbar .zr { white-space:nowrap; }
+.rl-zbar > div:first-child { border-top-left-radius:11px;
+                             border-bottom-left-radius:11px; }
+.rl-zbar > div:last-child  { border-top-right-radius:11px;
+                             border-bottom-right-radius:11px; }
 .rl-zbar .zn { font-size:.68rem; font-weight:750; letter-spacing:-.01em; }
 .rl-zbar .zr { font-size:.63rem; font-weight:600; opacity:.75;
                font-variant-numeric:tabular-nums; }
@@ -434,34 +454,84 @@ def bar(pct: float, tone: str = "") -> None:
                 unsafe_allow_html=True)
 
 
+def alerts(items: list[dict]) -> None:
+    """체크포인트 줄 — Streamlit 기본 경고 블록 대신 카드 디자인에 맞춘 줄로 그립니다.
+    items = [{"level": "error|warning|info", "msg": "..."}, ...]"""
+    tone = {"error": ("bad", "\u26a0\ufe0f"), "warning": ("warn", "\u26a0\ufe0f"),
+            "info": ("info", "\u2139\ufe0f"), "success": ("info", "\u2705")}
+    html = ""
+    for a in items:
+        t, ic = tone.get(str(a.get("level", "info")), ("info", "\u2139\ufe0f"))
+        msg = str(a.get("msg", ""))
+        # 메시지가 이미 그림문자로 시작하면(예: "👟 …") 아이콘을 또 붙이지 않습니다
+        if msg[:1] and unicodedata.category(msg[0]) == "So":
+            ic = ""
+        html += (f"<div class='rl-alert {t}'>"
+                 + (f"<span class='ic'>{ic}</span>" if ic else "")
+                 + f"<span>{msg}</span></div>")
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def item_list(items: list[tuple[str, str]]) -> None:
     st.markdown("".join(f"<div class='rl-item'><div class='t'>{t}</div>"
                         f"<div class='m'>{m}</div></div>" for t, m in items),
                 unsafe_allow_html=True)
 
 
+def _numtxt(v) -> str:
+    """스파크라인 툴팁용 숫자 표기 — 불필요한 소수점 0은 떼어냅니다."""
+    f = float(v)
+    return f"{f:,.0f}" if abs(f - round(f)) < 1e-9 else f"{f:,.2f}".rstrip("0").rstrip(".")
+
+
 def _spark_svg(vals, tone: str = "") -> str:
-    """작은 추세선(스파크라인)을 인라인 SVG로. 값이 2개 미만이면 빈 문자열."""
+    """작은 추세선(스파크라인)을 인라인 SVG로. 값이 2개 미만이면 빈 문자열.
+
+    vals 는 숫자 목록이거나 (라벨, 숫자) 쌍의 목록입니다. 쌍으로 주면 점마다
+    투명한 판정 영역을 깔고 <title>을 달아서, 마우스를 올리거나 길게 누르면
+    '날짜 · 값'이 뜹니다.
+    """
+    labels, pts = [], []
     try:
-        pts = [float(v) for v in vals if v is not None and float(v) == float(v)]
+        for v in vals:
+            if isinstance(v, (tuple, list)) and len(v) == 2:
+                lab, num = v
+            else:
+                lab, num = None, v
+            if num is None:
+                continue
+            num = float(num)
+            if num != num:                      # NaN
+                continue
+            labels.append("" if lab is None else str(lab))
+            pts.append(num)
     except (TypeError, ValueError):
         return ""
     if len(pts) < 2:
         return ""
-    pts = pts[-30:]
+    labels, pts = labels[-30:], pts[-30:]
     lo, hi = min(pts), max(pts)
     rng = (hi - lo) or 1.0
     w, h, pad = 100.0, 26.0, 3.0
     step = w / (len(pts) - 1)
     col = {"ok": "var(--ok)", "warn": "var(--warn)", "bad": "var(--bad)"}.get(
         tone, "var(--accent)")
-    d = " ".join(f"{i * step:.1f},{pad + (h - 2 * pad) * (1 - (v - lo) / rng):.1f}"
-                 for i, v in enumerate(pts))
-    last_x, last_y = d.split(" ")[-1].split(",")
+    xs = [i * step for i in range(len(pts))]
+    ys = [pad + (h - 2 * pad) * (1 - (v - lo) / rng) for v in pts]
+    d = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
+    hit = ""
+    if any(labels):
+        half = step / 2
+        for x, lab, v in zip(xs, labels, pts):
+            t = f"{lab} · {_numtxt(v)}" if lab else _numtxt(v)
+            hit += (f"<rect x='{max(0.0, x - half):.2f}' y='0' "
+                    f"width='{min(step, w):.2f}' height='{h:.0f}' fill='transparent'>"
+                    f"<title>{t}</title></rect>")
     return (f"<svg class='spark' viewBox='0 0 {w:.0f} {h:.0f}' preserveAspectRatio='none'>"
             f"<polyline points='{d}' fill='none' stroke='{col}' stroke-width='1.6' "
             f"stroke-linecap='round' stroke-linejoin='round' vector-effect='non-scaling-stroke'/>"
-            f"<circle cx='{last_x}' cy='{last_y}' r='1.8' fill='{col}'/></svg>")
+            f"<circle cx='{xs[-1]:.1f}' cy='{ys[-1]:.1f}' r='1.8' fill='{col}'/>"
+            f"{hit}</svg>")
 
 
 def tiles(items, per_row_pc: int = 4) -> None:
