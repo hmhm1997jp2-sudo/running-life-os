@@ -37,11 +37,11 @@ _REQUIRED = {
                            "build_alerts", "classify_laps", "daily_load_series", "decoupling",
                            "decoupling_verdict", "detect_prs", "effective_load_ratio",
                            "effective_vo2max", "efficiency_factor", "endurance_meta",
-                           "garmin_alerts", "garmin_race_predictions", "garmin_vs_computed",
-                           "has_watch_zones", "hill_meta", "intensity_distribution",
-                           "interval_shape", "lap_role_summary", "latest_garmin",
-                           "load_focus", "load_ratio_meta", "load_summary", "pace_str",
-                           "parse_time_str", "parse_zone_pcts", "predict_time",
+                           "fix_race_pred", "garmin_alerts", "garmin_race_predictions",
+                           "garmin_vs_computed", "has_watch_zones", "hill_meta",
+                           "intensity_distribution", "interval_shape", "lap_role_summary",
+                           "latest_garmin", "load_focus", "load_ratio_meta", "load_summary",
+                           "pace_str", "parse_time_str", "parse_zone_pcts", "predict_time",
                            "preferred_zone_model", "prepare_workouts", "profile_changes",
                            "profile_history", "race_plan", "readiness_factors",
                            "readiness_meta", "recovery_meta", "recovery_remaining",
@@ -2358,7 +2358,11 @@ with tab_log:
                         "EnduranceScore": es or "", "HillScore": hs or "",
                         "FocusAnaerobic": fan or "", "FocusHighAerobic": fhi or "",
                         "FocusLowAerobic": flo or "",
-                        "Pred5K": p5, "Pred10K": p10, "PredHalf": ph, "PredFull": pf,
+                        # 예전에 '48:28:00'처럼 잘못 저장된 값이 다시 들어오는 것을 막습니다
+                        "Pred5K": ana.fix_race_pred(p5, "Pred5K"),
+                        "Pred10K": ana.fix_race_pred(p10, "Pred10K"),
+                        "PredHalf": ana.fix_race_pred(ph, "PredHalf"),
+                        "PredFull": ana.fix_race_pred(pf, "PredFull"),
                         "LTPace": mlp, "LTHR": "", "LTPower": "",
                         "WeightKg": "", "BodyFatPct": "", "Notes": ""}]))
                     st.success("저장 완료")
@@ -2410,6 +2414,9 @@ with tab_log:
              ("LTPace", "text", "LT 페이스", None),
              ("Notes", "area", "메모", None)],
             key="metric", title="✏️ 측정 기록 수정 / 삭제",
+            derive=lambda v: {k: ana.fix_race_pred(v.get(k), k)
+                              for k in ("Pred5K", "Pred10K", "PredHalf", "PredFull")
+                              if str(v.get(k) or "").strip()},
             row_filter=only_measure_rows,
             note="LTHR·체중·체지방률은 ‘👤 프로필 & 기준값’ 탭의 "
                  "**기준값 이력 수정 / 삭제**에서 고칩니다.",
