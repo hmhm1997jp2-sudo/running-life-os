@@ -45,10 +45,10 @@ _REQUIRED = {
                            "prepare_workouts", "profile_changes", "profile_history",
                            "race_plan", "readiness_factors", "readiness_meta",
                            "recovery_meta", "recovery_remaining", "resolve_lthr",
-                           "set_watch_zones", "stage_to_role", "status_meta", "time_str",
-                           "training_paces", "vdot_from_performance", "weekly_summary",
-                           "zone_bounds", "zone_history", "zone_pace_trend", "zone_segments",
-                           "zone_table"]),
+                           "set_watch_zones", "shoe_mileage", "stage_to_role", "status_meta",
+                           "time_str", "training_paces", "vdot_from_performance",
+                           "weekly_summary", "zone_bounds", "zone_history", "zone_pace_trend",
+                           "zone_segments", "zone_table"]),
     "ui.py":        (ui, ["bar", "boot", "card", "chart_height", "cols", "head", "hero",
                           "is_dark", "is_mobile", "item_list", "metrics", "mode_switch",
                           "pill", "rows", "tiles"]),
@@ -62,7 +62,8 @@ _stale = [(f, [a for a in attrs if not hasattr(m, a)]) for f, (m, attrs) in _REQ
 _need_cols = {"Laps": ["LapRole", "GapPaceSec"], "Athlete": ["RunZonePct"],
               "Workouts": ["GapPaceSec"],
               "DailyStatus": ["RecoveryUntil", "SleepHistory", "StressHistory",
-                              "EntryKind"]}
+                              "EntryKind"],
+              "Shoes": ["InitialAsOf"]}
 _miss_cols = [f"{sh}.{c}" for sh, cs in _need_cols.items()
               for c in cs if c not in getattr(db, "SCHEMA", {}).get(sh, [])]
 if _miss_cols:
@@ -361,10 +362,10 @@ def record_editor(sheet: str, id_col: str, label_fn, fields, key: str,
                         vals[col] = c.number_input(label, value=fnum(cur), step=_step,
                                                    format="%g", key=f"{wk}_{col}")
                     elif typ == "date":
-                        try:
-                            dv = pd.to_datetime(cur).date()
-                        except Exception:
-                            dv = date.today()
+                        # 빈 칸/NaT는 예외를 내지 않고 NaT를 돌려주므로 따로 걸러야
+                        # 합니다 (그대로 넘기면 date_input이 터집니다).
+                        dv = pd.to_datetime(cur, errors="coerce")
+                        dv = dv.date() if pd.notna(dv) else date.today()
                         vals[col] = c.date_input(label, dv, key=f"{wk}_{col}")
                     elif typ == "select":
                         lst = list(opt or [])
@@ -3151,6 +3152,9 @@ with tab_ana:
                 wdf["상태"] = np.where(wdf["주"] == _this_wk, "진행 중", "완료")
                 _wx = alt.X("주라벨:O", title=None, sort=_worder2,
                             axis=alt.Axis(labelAngle=0, labelOverlap="greedy"))
+                # 주 수가 적을 때 화면 폭을 다 쓰면 막대가 허공에 뜬 것처럼 보입니다.
+                # 한 주 = 고정 폭으로 두고 필요한 만큼만 넓어지게 합니다.
+                _wstep = 30 if ui.is_mobile() else 42
                 bars = alt.Chart(wdf).mark_bar(color=C["primary"], size=20).encode(
                     x=_wx,
                     y=alt.Y("Distance:Q", title="km"),
@@ -3168,8 +3172,9 @@ with tab_ana:
                     x=_wx, y=alt.Y("MA4:Q", title=None),
                     tooltip=[alt.Tooltip("주:O", title="주"),
                              alt.Tooltip("MA4:Q", title="4주 평균(km)", format=".1f")])
-                st.altair_chart((bars + ma).properties(height=ui.chart_height(300, 240)),
-                                width="stretch")
+                st.altair_chart((bars + ma).properties(
+                    width=alt.Step(_wstep), height=ui.chart_height(300, 240)),
+                    width="content")
                 if not ui.is_mobile():
                     st.dataframe(wk[["Distance", "Runs", "LongRun", "AvgPaceStr", "WoW%", "Ramp_Flag"]]
                                  .rename(columns={"Distance": "거리(km)", "Runs": "횟수",
@@ -3228,24 +3233,37 @@ with tab_ana:
 
             with g[1 % len(g)]:
                 with ui.card("effi"):
-                    ui.head("💓 러닝 이코노미 (EF)", "이지런 속도÷심박 — 우상향이면 개선")
                     ef = ana.efficiency_factor(df_w)
+                    ui.head("💓 러닝 이코노미 (EF)",
+                            "이지런 속도÷심박 — 우상향이면 개선"
+                            + (" · 주황 선은 4회 이동평균" if len(ef) >= 6
+                               else " · 이지런 6회부터 추세선이 그려집니다"))
+                    # 점이 몇 개 없을 때 '4회 이동평균'은 점과 따로 노는 선처럼
+                    # 보일 뿐 뜻이 없습니다 → 충분히 쌓인 뒤에만 그립니다.
+                    _ef_ma = len(ef) >= 6
                     if not ef.empty:
-                        st.altair_chart(alt.Chart(ef).mark_circle(size=45, opacity=.45,
+                        st.altair_chart(alt.Chart(ef).mark_circle(size=80, opacity=.85,
                                                                   color=C["primary"]).encode(
+                            # 좌우 끝 점이 축에 걸려 잘리면 '선만 있고 점이 없는' 것처럼
+                            # 보입니다 → 양옆에 여백(padding)을 둡니다.
                             x=alt.X("WorkoutDate:T", title=None,
+                                    scale=alt.Scale(padding=18),
                                     axis=date_axis(_span_days(ef["WorkoutDate"]))),
-                            y=alt.Y("EF:Q", title="EF",
-                                                                          scale=alt.Scale(zero=False)),
+                            y=alt.Y("EF:Q", title=None,
+                                    scale=alt.Scale(zero=False, padding=10)),
                             tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜", format="%Y-%m-%d"),
                                      alt.Tooltip("EF:Q", title="EF", format=".3f")])
-                            .properties(height=ui.chart_height(200, 180))
-                            + alt.Chart(ef).mark_line(color=C["accent"], strokeWidth=2.5).encode(
-                                x="WorkoutDate:T", y="EF_MA4:Q",
-                                tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜",
-                                                     format="%Y-%m-%d"),
-                                         alt.Tooltip("EF_MA4:Q", title="4회 평균 EF",
-                                                     format=".3f")]),
+                            .properties(height=ui.chart_height(200, 180),
+                                        title=panel_title("EF (속도 ÷ 심박)"))
+                            + (alt.Chart(ef).mark_line(color=C["accent"], strokeWidth=2.5)
+                               .encode(x="WorkoutDate:T", y="EF_MA4:Q",
+                                       tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜",
+                                                            format="%Y-%m-%d"),
+                                                alt.Tooltip("EF_MA4:Q", title="4회 평균 EF",
+                                                            format=".3f")])
+                               if _ef_ma else
+                               alt.Chart(ef).mark_point(opacity=0).encode(
+                                   x="WorkoutDate:T", y="EF:Q")),
                             width="stretch")
                     else:
                         st.caption("이지런(Easy/Recovery/LSD) 기록이 필요합니다.")
@@ -3262,17 +3280,30 @@ with tab_ana:
                             "**몇 주 흐름**으로 판단하세요.")
 
             with ui.card("scatter"):
-                ui.head("🫀 페이스 대비 심박", "왼쪽 아래로 이동할수록 기량 향상")
+                ui.head("🫀 페이스 대비 심박",
+                        "오른쪽으로 갈수록 빠른 페이스 — <b>오른쪽 아래</b>로 모일수록 "
+                        "같은 심박으로 더 빨리 뛰는 것(기량 향상)")
                 sc = d[(d["AvgHeartRate"] > 0) & (d["PaceSec"].notna())].copy()
                 if not sc.empty:
                     sc["월"] = sc["WorkoutDate"].dt.to_period("M").astype(str)
                     sc["페이스(분/km)"] = sc["PaceSec"] / 60
+                    _one_month = sc["월"].nunique() <= 1
                     st.altair_chart(alt.Chart(sc).mark_circle(size=80, opacity=.6).encode(
-                        x=alt.X("페이스(분/km):Q", scale=alt.Scale(zero=False, reverse=True)),
+                        # 6.38 같은 '소수 분'은 6분 38초로 오해하기 딱 좋습니다 →
+                        # 눈금을 m:ss 로 바꿔 씁니다. 오른쪽이 빠른 쪽(reverse).
+                        x=alt.X("페이스(분/km):Q", title="페이스 (빠름 →)",
+                                scale=alt.Scale(zero=False, reverse=True, padding=16),
+                                axis=alt.Axis(
+                                    tickCount=6,
+                                    labelExpr=("format(floor(datum.value), 'd') + ':' + "
+                                               "(round((datum.value % 1) * 60) < 10 ? '0' : '') + "
+                                               "format(round((datum.value % 1) * 60), 'd')"))),
                         y=alt.Y("AvgHeartRate:Q", title="평균 심박", scale=alt.Scale(zero=False),
                             axis=alt.Axis(format=",d", tickMinStep=1)),
-                        color=alt.Color("월:N", title=None,
-                                       scale=alt.Scale(range=ramp(sc["월"].nunique()))),
+                        # 한 달치뿐이면 범례가 한 칸짜리라 자리만 차지합니다
+                        color=(alt.value(C["primary"]) if _one_month else
+                               alt.Color("월:N", title=None,
+                                         scale=alt.Scale(range=ramp(sc["월"].nunique())))),
                         size=alt.Size("DistanceKm:Q", legend=None),
                         tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜", format="%Y-%m-%d"),
                                  alt.Tooltip("WorkoutType:N", title="유형"),
@@ -3288,6 +3319,9 @@ with tab_ana:
                 dl["주차"] = ((dl["Date"] - dl["Date"].min()).dt.days // 7)
                 dl["요일명"] = dl["요일"].map({0: "월", 1: "화", 2: "수", 3: "목",
                                             4: "금", 5: "토", 6: "일"})
+                # 칸 크기를 '한 칸 = 몇 px'로 고정합니다. 화면 폭에 맞춰 늘리면
+                # 데이터가 2주치뿐일 때 칸 하나가 400px짜리 막대가 돼 버립니다.
+                _cell = 15 if ui.is_mobile() else 17
                 st.altair_chart(alt.Chart(dl).mark_rect(cornerRadius=2, stroke=C["surface"],
                                                         strokeWidth=2).encode(
                     x=alt.X("주차:O", axis=None),
@@ -3296,7 +3330,8 @@ with tab_ana:
                                    scale=alt.Scale(range=[C["pale"], C["primary"]])),
                     tooltip=[alt.Tooltip("Date:T", title="날짜", format="%Y-%m-%d"),
                              alt.Tooltip("DistanceKm:Q", title="거리(km)", format=".1f")])
-                    .properties(height=ui.chart_height(170, 150)), width="stretch")
+                    .properties(width=alt.Step(_cell), height=alt.Step(_cell)),
+                    width="content")
 
             k = ui.cols(2, 1)
             with k[0]:
@@ -3333,7 +3368,8 @@ with tab_ana:
                          + _mb.mark_text(dy=-8, fontSize=10, fontWeight=600,
                                          color=C["muted"]).encode(
                              text=alt.Text("DistanceKm:Q", format=".0f")))
-                        .properties(height=ui.chart_height(220, 200)), width="stretch")
+                        .properties(width=alt.Step(40),
+                                    height=ui.chart_height(220, 200)), width="content")
 
     # ── 3-5 기량 예측 ───────────────────────────────────────────────────────────
     with s_pred:
@@ -3603,15 +3639,24 @@ with tab_goal:
                     scat = st.multiselect("용도 (복수 선택)", SHOE_CATEGORIES,
                                           default=["데일리 트레이너"],
                                           help="한 켤레가 여러 역할을 겸하면 모두 고르세요")
-                    sd_ = ui.cols(2, 2, keep_row=True)
-                    sinit = sd_[0].number_input("기존 누적 (km)", 0.0, 2000.0, 0.0, 1.0)
-                    starg = sd_[1].number_input("목표 수명 (km)", 100.0, 2000.0, 600.0, 50.0)
+                    sd_ = ui.cols(3, 2, keep_row=True)
+                    sinit = grid_at(sd_, 0, 3).number_input(
+                        "기존 누적 (km)", 0.0, 2000.0, 0.0, 1.0,
+                        help="앱을 쓰기 전까지 이미 신은 거리.")
+                    sasof = grid_at(sd_, 1, 3).date_input(
+                        "기존 누적 기준일", date.today(), key="shoe_asof",
+                        help="위 '기존 누적'이 **언제까지**를 더한 값인지. "
+                             "이 날짜 다음 날부터의 훈련만 누적에 더해지므로, "
+                             "나중에 예전 기록을 넣어도 거리가 두 번 세어지지 않습니다.")
+                    starg = grid_at(sd_, 2, 3).number_input(
+                        "목표 수명 (km)", 100.0, 2000.0, 600.0, 50.0)
                     if st.form_submit_button("등록", width="stretch", type="primary"):
                         db.append_rows("Shoes", pd.DataFrame([{
                             "ShoeID": new_id("SHOE"), "ShoeName": sn, "Brand": sbrand,
                             "PurchaseDate": date.today().strftime("%Y-%m-%d"),
                             "InitialDistanceKm": sinit, "TargetDistanceKm": starg,
-                            "Status": "ACTIVE", "Category": ", ".join(scat), "Notes": ""}]))
+                            "Status": "ACTIVE", "Category": ", ".join(scat), "Notes": "",
+                            "InitialAsOf": sasof.strftime("%Y-%m-%d")}]))
                         st.success("등록 완료")
                         st.rerun()
 
@@ -3622,9 +3667,7 @@ with tab_goal:
             for i, (_, s) in enumerate(df_shoes.iterrows()):
                 with sc[i % len(sc)]:
                     with ui.card(f"shoe{i}"):
-                        used = fnum(s.get("InitialDistanceKm")) + (
-                            float(d.loc[d["ShoeID"].astype(str) == str(s["ShoeID"]),
-                                        "DistanceKm"].sum()) if "ShoeID" in d.columns else 0.0)
+                        used = ana.shoe_mileage(s, d)
                         targ = fnum(s.get("TargetDistanceKm"), 600.0) or 600.0
                         pct = min(100.0, used / targ * 100)
                         tone = "bad" if pct >= 100 else ("warn" if pct >= 85 else "")
@@ -3661,6 +3704,7 @@ with tab_goal:
              ("Category", "multi", "용도 (복수 선택)", SHOE_CATEGORIES),
              ("Status", "select", "상태", ["ACTIVE", "NEW", "RETIRED"]),
              ("InitialDistanceKm", "num", "기존 누적 (km)", None),
+             ("InitialAsOf", "date", "기존 누적 기준일", None),
              ("TargetDistanceKm", "num", "목표 수명 (km)", None),
              ("PurchaseDate", "date", "구입일", None),
              ("Notes", "area", "메모", None)],
