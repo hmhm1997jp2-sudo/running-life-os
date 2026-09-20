@@ -32,23 +32,24 @@ import analytics as ana
 # (목록 갱신: python tools/refresh_required.py 또는 app.py의 ana./db./ui. 사용처를 재수집)
 _REQUIRED = {
     "analytics.py": (ana, ["BELOW_Z1", "LAP_ROLES", "PRIMARY_BENEFIT", "PR_CATEGORIES",
-                           "TRAINING_STATUS", "TRAINING_STATUS_KR", "WATCH_MODEL",
-                           "ZONE_MODELS", "age_from_birth", "assign_zones", "bpm_to_pct",
-                           "build_alerts", "classify_laps", "daily_load_series", "decoupling",
-                           "decoupling_verdict", "detect_prs", "effective_load_ratio",
-                           "effective_vo2max", "efficiency_factor", "endurance_meta",
-                           "fix_race_pred", "garmin_alerts", "garmin_race_predictions",
-                           "garmin_vs_computed", "has_watch_zones", "hill_meta",
-                           "intensity_distribution", "interval_shape", "lap_role_summary",
-                           "latest_garmin", "load_focus", "load_ratio_meta", "load_summary",
-                           "pace_str", "parse_time_str", "parse_zone_pcts", "predict_time",
-                           "preferred_zone_model", "prepare_workouts", "profile_changes",
-                           "profile_history", "race_plan", "readiness_factors",
-                           "readiness_meta", "recovery_meta", "recovery_remaining",
-                           "resolve_lthr", "set_watch_zones", "shoe_mileage", "stage_to_role",
-                           "status_meta", "time_str", "training_paces",
-                           "vdot_from_performance", "weekly_summary", "zone_bounds",
-                           "zone_history", "zone_pace_trend", "zone_segments", "zone_table"]),
+                           "STATUS_GROUP", "TRAINING_STATUS", "TRAINING_STATUS_KR",
+                           "WATCH_MODEL", "ZONE_MODELS", "age_from_birth", "assign_zones",
+                           "bpm_to_pct", "build_alerts", "classify_laps", "daily_load_series",
+                           "decoupling", "decoupling_verdict", "detect_prs",
+                           "effective_load_ratio", "effective_vo2max", "efficiency_factor",
+                           "endurance_meta", "fix_race_pred", "garmin_alerts",
+                           "garmin_race_predictions", "garmin_vs_computed", "has_watch_zones",
+                           "hill_meta", "intensity_distribution", "interval_shape",
+                           "lap_role_summary", "latest_garmin", "load_focus",
+                           "load_ratio_meta", "load_summary", "pace_str", "parse_time_str",
+                           "parse_zone_pcts", "predict_time", "preferred_zone_model",
+                           "prepare_workouts", "profile_changes", "profile_history",
+                           "race_plan", "readiness_factors", "readiness_meta",
+                           "recovery_meta", "recovery_remaining", "resolve_lthr",
+                           "set_watch_zones", "shoe_mileage", "stage_to_role", "status_meta",
+                           "time_str", "training_paces", "vdot_from_performance",
+                           "weekly_summary", "zone_bounds", "zone_history", "zone_pace_trend",
+                           "zone_segments", "zone_table"]),
     "ui.py":        (ui, ["bar", "boot", "card", "chart_height", "cols", "head", "hero",
                           "is_dark", "is_mobile", "item_list", "metrics", "mode_switch",
                           "pill", "rows", "tiles"]),
@@ -166,14 +167,6 @@ def ramp(n: int, lo: str = None, hi: str = None) -> list[str]:
     return ["#%02x%02x%02x" % tuple(
         round(a[k] + (b[k] - a[k]) * i / (n - 1)) for k in range(3))
         for i in range(n)]
-
-
-def STATUS_COLORS() -> list[str]:
-    """트레이닝 상태 8단계 — 나쁨 / 주의 / 중립 / 좋음 네 묶음으로만 칠합니다.
-    Y축에 상태 이름이 이미 적혀 있어서 색이 여덟 가지일 필요가 없고,
-    비슷한 초록 두 개(유지·생산적)는 오히려 구분이 안 됐습니다."""
-    bad, warn, calm, good = C["red"], C["amber"], C["primary"], C["green"]
-    return [bad, bad, warn, warn, calm, calm, good, good]
 
 
 def chart_theme():
@@ -500,6 +493,34 @@ SLEEP_HIST_OPTS = ["(미입력)", "좋음", "보통", "나쁨"]
 STRESS_HIST_OPTS = ["(미입력)", "낮음", "보통", "높음", "매우 높음"]
 
 WD_KR = ["월", "화", "수", "목", "금", "토", "일"]
+
+STATUS_HELP = """
+**둘 다 좋은 상태입니다.** 가민은 이 값들을 등급으로 매기지 않습니다 — *지금 어떤
+국면인가*를 말해줄 뿐입니다.
+
+| 상태 | 가민의 정의 | 언제 이게 맞는 상태인가 |
+|---|---|---|
+| **생산적** | 지금 부하가 기량을 올리는 방향으로 작용 중 | 볼륨을 쌓는 빌드업 시기 |
+| **유지** | 지금 부하로 현재 기량을 지키기에 충분 | 시즌 중 유지기, 바쁜 시기, 테이퍼 초반 |
+| **회복** | 부하를 낮춰 몸이 회복하는 중 | 힘든 주 다음, 의도한 리커버리 주 |
+| **피킹** | 레이스에 딱 맞는 컨디션 | 대회 직전 테이퍼 끝물 |
+
+**‘생산적’이 계속 이어지는 게 정답이 아닙니다.** 계속 밀어붙이면 결국
+*비생산적*이나 *과훈련*으로 넘어갑니다. 빌드업 → 유지/회복 → 피킹으로
+오르내리는 게 정상적인 흐름입니다.
+
+**정말 살펴봐야 하는 것은 이쪽입니다.**
+
+- **비생산적** — 부하는 충분한데 **기량이 떨어지는 중**. 수면·영양·스트레스, 또는
+  훈련 강도 배분을 봐야 합니다. 이게 제일 중요한 신호입니다.
+- **트레이닝 부족** — 한 주 이상 평소보다 훨씬 적게 훈련. 의도한 휴식이면 괜찮습니다.
+- **부하 과다(Strained)** — 회복 대비 부하가 큼. 힘든 훈련이나 대회 뒤에는
+  **정상적으로 나타납니다**. 며칠 이어지면 그때 줄이세요.
+- **과훈련** — 부하가 너무 높아 역효과. 쉬어야 합니다.
+
+위 타임라인의 **세로 위치는 부하의 크기 순서**이고, **색은 ‘지금 뭔가 해야 하나’**만
+나타냅니다. 위에 있다고 좋은 게 아닙니다.
+"""
 
 DAILY_TIMING_HELP = """
 가민 일일 지표는 **하나의 시점에 찍히는 값이 아닙니다.** 크게 두 묶음입니다.
@@ -2869,22 +2890,36 @@ with tab_ana:
                 gdv = _clip(gdv, "StatusDate")
 
                 with ui.card("gts"):
-                    ui.head("⌚ 트레이닝 상태 타임라인", "가민이 판정한 상태의 변화")
+                    ui.head("⌚ 트레이닝 상태 타임라인",
+                            "가민이 판정한 <b>국면</b>의 변화 · <b>아래로 갈수록 "
+                            "부하가 큽니다</b> — 잘하고 못하고의 순서가 아닙니다")
                     tl = gdv[gdv["TrainingStatus"].astype(str).str.strip() != ""].copy()
                     if not tl.empty:
                         tl["상태"] = tl["TrainingStatus"].map(
                             lambda x: ana.TRAINING_STATUS_KR.get(str(x), str(x)))
-                        order = ["무리한 훈련", "과훈련", "비생산적", "트레이닝 부족",
-                                 "회복", "유지", "생산적", "피킹"]
+                        # 세로축은 '부하가 적음 → 많음' 순서입니다.
+                        # 예전에는 '나쁨 → 좋음'처럼 늘어놓아서, 유지가 생산적보다
+                        # 못한 상태인 것처럼 읽혔습니다. 가민은 둘을 등급으로
+                        # 나누지 않습니다.
+                        order = ["트레이닝 부족", "회복", "피킹", "유지",
+                                 "생산적", "비생산적", "부하 과다", "과훈련"]
+                        tl["구분"] = tl["상태"].map(ana.STATUS_GROUP).fillna("정상 진행")
+                        _gdom = ["정상 진행", "살펴볼 것", "줄여야 할 것"]
                         st.altair_chart(alt.Chart(tl).mark_circle(size=110, opacity=.85).encode(
                             x=alt.X("StatusDate:T", title=None, axis=date_axis(_span_days(tl["StatusDate"]))),
                             y=alt.Y("상태:N", sort=order, title=None),
-                            color=alt.Color("상태:N", sort=order, legend=None,
-                                            scale=alt.Scale(domain=order,
-                                                            range=STATUS_COLORS())),
+                            # 색은 '지금 뭔가 해야 하나'만 나타냅니다
+                            color=alt.Color("구분:N", title=None,
+                                            scale=alt.Scale(domain=_gdom,
+                                                            range=[C["primary"], C["amber"],
+                                                                   C["red"]]),
+                                            legend=alt.Legend(orient="top")),
                             tooltip=[alt.Tooltip("StatusDate:T", title="날짜", format="%Y-%m-%d"),
-                                     alt.Tooltip("상태:N", title="상태")]
-                        ).properties(height=ui.chart_height(220, 200)), width="stretch")
+                                     alt.Tooltip("상태:N", title="상태"),
+                                     alt.Tooltip("구분:N", title="구분")]
+                        ).properties(height=ui.chart_height(230, 210)), width="stretch")
+                        with st.expander("❓ ‘생산적’과 ‘유지’ 중 뭐가 좋은 건가요"):
+                            st.markdown(STATUS_HELP)
                     else:
                         st.caption("Training Status 입력 기록이 없습니다.")
 
