@@ -921,8 +921,7 @@ def build_alerts(df_work: pd.DataFrame, df_shoes: pd.DataFrame,
             if str(s.get("Status", "")).upper() == "RETIRED":
                 continue
             sid = s.get("ShoeID")
-            used = _num(s.get("InitialDistanceKm")) + float(
-                d.loc[d["ShoeID"].astype(str) == str(sid), "DistanceKm"].sum())
+            used = shoe_mileage(s, d)
             target = _num(s.get("TargetDistanceKm"), 600.0) or 600.0
             pct = used / target * 100
             if pct >= 100:
@@ -1114,6 +1113,25 @@ def readiness_factors(g: dict) -> list[dict]:
         out.append({"name": name, "value": val or "", "state": state or "—",
                     "tone": _HIST_TONE.get(state, ""), "note": note})
     return out
+
+
+def shoe_mileage(shoe: dict | pd.Series, df_prepared: pd.DataFrame) -> float:
+    """러닝화 누적 거리 = 기존 누적 + (기준일 이후) 이 신발로 뛴 거리.
+
+    '기존 누적'은 앱을 쓰기 전까지 이미 신은 거리입니다. 기준일(InitialAsOf)이
+    있으면 그날까지는 기존 누적에 이미 포함된 것으로 보고, **그 다음 날부터**의
+    훈련만 더합니다. 그래야 나중에 예전 기록을 넣어도 두 번 세어지지 않습니다.
+    기준일이 비어 있으면 예전처럼 전체를 더합니다.
+    """
+    base = _num(shoe.get("InitialDistanceKm"), 0.0)
+    if df_prepared is None or df_prepared.empty or "ShoeID" not in df_prepared.columns:
+        return float(base if np.isfinite(base) else 0.0)
+    m = df_prepared["ShoeID"].astype(str) == str(shoe.get("ShoeID"))
+    asof = pd.to_datetime(shoe.get("InitialAsOf"), errors="coerce")
+    if pd.notna(asof):
+        m &= df_prepared["WorkoutDate"] > asof
+    ran = float(df_prepared.loc[m, "DistanceKm"].sum())
+    return float((base if np.isfinite(base) else 0.0) + ran)
 
 
 def status_meta(status) -> tuple[str, str, str]:
