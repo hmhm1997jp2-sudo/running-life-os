@@ -1010,19 +1010,33 @@ def parse_time_str(s) -> float:
     return np.nan
 
 
+def _measured_ts(df: pd.DataFrame, date_col: str) -> pd.Series:
+    """'언제 본 값인가'를 시각까지 포함해 돌려줍니다.
+    MeasuredAt('2026-09-20 07:51 (기상 직후)')이 있으면 그 시각을, 없으면 그 날 00:00을
+    씁니다. 같은 날 아침/훈련 후 두 줄이 있을 때 어느 쪽이 더 나중인지 가리는 데 씁니다."""
+    base = pd.to_datetime(df[date_col], errors="coerce")
+    if "MeasuredAt" not in df.columns:
+        return base
+    txt = df["MeasuredAt"].astype(str).str.extract(
+        r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})", expand=False)
+    exact = pd.to_datetime(txt, errors="coerce")
+    return exact.fillna(base)
+
+
 def _latest(df: pd.DataFrame, date_col: str, field: str):
     """해당 컬럼에서 값이 있는 가장 최근 행의 (값, 날짜)."""
     if df is None or df.empty or field not in df.columns:
-        return None, None
+        return None, None, None
     d = df.copy()
+    d["_ts"] = _measured_ts(d, date_col)
     d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
-    d = d.dropna(subset=[date_col]).sort_values(date_col)
+    d = d.dropna(subset=[date_col]).sort_values(["_ts", date_col], kind="stable")
     vals = d[field]
     mask = vals.notna() & (vals.astype(str).str.strip() != "")
     if not mask.any():
-        return None, None
+        return None, None, None
     row = d[mask].iloc[-1]
-    return row[field], row[date_col]
+    return row[field], row[date_col], row["_ts"]
 
 
 def latest_garmin(df_daily: pd.DataFrame, df_metrics: pd.DataFrame) -> dict:
@@ -1032,17 +1046,73 @@ def latest_garmin(df_daily: pd.DataFrame, df_metrics: pd.DataFrame) -> dict:
     daily_fields = ["TrainingStatus", "AcuteLoad", "LoadRatio", "RecoveryTimeHr",
                     "TrainingReadiness", "BodyBattery", "HRVStatus", "HRVms",
                     "SleepScore", "RestingHR", "IntensityMinutes",
-                    "MeasuredAt", "RecoveryUntil"]
+                    "MeasuredAt", "RecoveryUntil",
+                    "SleepHistory", "StressHistory"]
     weekly_fields = ["VO2Max", "FitnessAge", "EnduranceScore", "HillScore",
                      "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
                      "Pred5K", "Pred10K", "PredHalf", "PredFull",
                      "LTPace", "LTHR", "WeightKg", "BodyFatPct"]
     for f in daily_fields:
-        v, dt = _latest(df_daily, "StatusDate", f)
-        out[f], out[f + "_date"] = v, dt
+        v, dt, ts = _latest(df_daily, "StatusDate", f)
+        out[f], out[f + "_date"], out[f + "_at"] = v, dt, ts
     for f in weekly_fields:
-        v, dt = _latest(df_metrics, "MetricDate", f)
-        out[f], out[f + "_date"] = v, dt
+        v, dt, ts = _latest(df_metrics, "MetricDate", f)
+        out[f], out[f + "_date"], out[f + "_at"] = v, dt, ts
+    return out
+
+
+# 가민 '트레이닝 준비 상태' 점수 구간 (Forerunner/fenix 사용설명서 기준)
+READINESS_TIERS = [(95, "최상", "ok"), (75, "높음", "ok"), (50, "중간", "info"),
+                   (25, "낮음", "warn"), (1, "나쁨", "bad")]
+
+
+def readiness_meta(score) -> tuple[str, str]:
+    """Training Readiness 점수 → (톤, 등급 한글). 시계에 뜨는 등급과 같습니다."""
+    v = _num(score, np.nan)
+    if not np.isfinite(v) or v <= 0:
+        return "", "미입력"
+    for lo, kr, tone in READINESS_TIERS:
+        if v >= lo:
+            return tone, kr
+    return "bad", "나쁨"
+
+
+# 가민이 준비 상태를 계산할 때 쓰는 여섯 가지 요인
+_HIST_TONE = {"좋음": "ok", "낮음": "ok", "균형 잡힘": "ok", "최적": "ok",
+              "낮은 필요성": "ok", "보통": "warn", "높음": "warn",
+              "중간 필요성": "warn", "나쁨": "bad", "매우 높음": "bad",
+              "높은 필요성": "bad", "불균형": "warn"}
+
+
+def readiness_factors(g: dict) -> list[dict]:
+    """시계의 '요인' 목록과 같은 순서로 (이름, 값, 상태, 톤)을 만들어 줍니다.
+    입력하지 않은 항목은 값 자리에 '—'가 들어갑니다."""
+    def num(k, fmt="{:.0f}", suffix=""):
+        v = _num(g.get(k), np.nan)
+        return (fmt.format(v) + suffix) if np.isfinite(v) and v > 0 else "—"
+
+    hrv_kr = {"Balanced": "균형 잡힘", "Unbalanced": "불균형",
+              "Low": "낮음", "Poor": "나쁨"}.get(str(g.get("HRVStatus") or ""), "")
+    rec_h = _num(g.get("RecoveryTimeHr"), np.nan)
+    rec_state = ("" if not np.isfinite(rec_h) else
+                 "낮은 필요성" if rec_h <= 12 else
+                 "중간 필요성" if rec_h <= 36 else "높은 필요성")
+    _, lr_txt = load_ratio_meta(g.get("LoadRatio"))
+    lr_state = {"최적 구간": "최적"}.get(lr_txt, lr_txt if g.get("LoadRatio") else "")
+    slp = _num(g.get("SleepScore"), np.nan)
+    slp_state = ("" if not np.isfinite(slp) or slp <= 0 else
+                 "좋음" if slp >= 80 else "보통" if slp >= 60 else "나쁨")
+
+    rows = [("수면 점수", num("SleepScore"), slp_state, "지난밤"),
+            ("회복 시간", num("RecoveryTimeHr", "{:.0f}", "h"), rec_state, "지금 기준"),
+            ("HRV 상태", num("HRVms", "{:.0f}", " ms"), hrv_kr, "밤사이 평균"),
+            ("단기 부하", num("AcuteLoad", "{:,.0f}"), lr_state, "최근 7일"),
+            ("최근 수면 점수", "", str(g.get("SleepHistory") or ""), "최근 3일"),
+            ("최근 스트레스", "", str(g.get("StressHistory") or ""), "최근 3일")]
+    out = []
+    for name, val, state, note in rows:
+        out.append({"name": name, "value": val or "", "state": state or "—",
+                    "tone": _HIST_TONE.get(state, ""), "note": note})
     return out
 
 
