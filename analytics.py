@@ -972,21 +972,32 @@ def race_plan(vdot: float, race_distance_km: float, goal_time_sec: float | None,
 #    계산으로 만들어내지 않습니다 (계산값은 위쪽 1~7절, 교차검증용).
 # ---------------------------------------------------------------------------
 
+# 가민 설명서의 정의를 그대로 옮긴 것입니다.
+# ※ 이 값들은 '등급'이 아니라 '지금 어떤 국면인가'입니다. 생산적이 유지보다
+#    좋은 것이 아니고, 무엇을 하려는 시기냐에 따라 맞는 상태가 다릅니다.
 TRAINING_STATUS = {
-    "Peaking":      ("ok",   "피킹 — 레이스 기량 최고조"),
-    "Productive":   ("ok",   "생산적 — 부하와 기량이 함께 상승 중"),
-    "Maintaining":  ("info", "유지 — 현재 수준을 지키는 중"),
-    "Recovery":     ("info", "회복 — 의도적으로 부하를 낮춘 구간"),
-    "Unproductive": ("warn", "비생산적 — 부하는 있으나 기량이 따라오지 않음"),
-    "Detraining":   ("warn", "트레이닝 부족 — 부하가 모자람"),
-    "Overreaching": ("bad",  "과훈련 — 부하가 회복 능력을 넘어섬"),
-    "Strained":     ("bad",  "무리한 훈련 — 즉시 회복 필요"),
-    "No Status":    ("info", "상태 없음 — 데이터가 더 필요함"),
+    "Peaking":      ("ok",   "피킹 — 레이스에 딱 맞는 컨디션. 부하를 줄인 덕에 "
+                             "그동안의 훈련 효과가 다 올라온 상태입니다"),
+    "Productive":   ("ok",   "생산적 — 지금 부하가 기량을 올리는 방향으로 "
+                             "작용하고 있습니다"),
+    "Maintaining":  ("ok",   "유지 — 지금 부하로 현재 기량을 지키기에 충분합니다. "
+                             "더 올리려면 볼륨을 늘리거나 훈련에 변화를 주세요"),
+    "Recovery":     ("ok",   "회복 — 부하를 낮춰 몸이 회복하는 중입니다. "
+                             "힘든 시기가 이어질 때 꼭 필요한 구간입니다"),
+    "Unproductive": ("warn", "비생산적 — 부하는 충분한데 기량이 떨어지고 있습니다. "
+                             "수면·영양·스트레스를 함께 보세요"),
+    "Detraining":   ("warn", "트레이닝 부족 — 한 주 이상 평소보다 훨씬 적게 "
+                             "훈련했습니다"),
+    "Overreaching": ("bad",  "과훈련 — 부하가 너무 높아 오히려 역효과입니다. "
+                             "쉬어야 합니다"),
+    "Strained":     ("warn", "부하 과다 — 회복 대비 부하가 큽니다. 힘든 훈련이나 "
+                             "큰 대회 뒤에는 정상적으로 나타납니다"),
+    "No Status":    ("info", "상태 없음 — 2주 이상의 기록이 더 필요합니다"),
 }
 TRAINING_STATUS_KR = {
     "Peaking": "피킹", "Productive": "생산적", "Maintaining": "유지",
     "Recovery": "회복", "Unproductive": "비생산적", "Detraining": "트레이닝 부족",
-    "Overreaching": "과훈련", "Strained": "무리한 훈련", "No Status": "상태 없음",
+    "Overreaching": "과훈련", "Strained": "부하 과다", "No Status": "상태 없음",
 }
 PRIMARY_BENEFIT = ["", "Recovery", "Base", "Tempo", "Threshold", "VO2max", "Anaerobic", "Sprint"]
 
@@ -1137,6 +1148,15 @@ def shoe_mileage(shoe: dict | pd.Series, df_prepared: pd.DataFrame) -> float:
         m &= df_prepared["WorkoutDate"] > asof
     ran = float(df_prepared.loc[m, "DistanceKm"].sum())
     return float((base if np.isfinite(base) else 0.0) + ran)
+
+
+# 색을 칠할 때 쓰는 묶음 — '좋다/나쁘다'가 아니라 '지금 뭘 해야 하나'입니다.
+STATUS_GROUP = {
+    "피킹": "정상 진행", "생산적": "정상 진행", "유지": "정상 진행", "회복": "정상 진행",
+    "비생산적": "살펴볼 것", "트레이닝 부족": "살펴볼 것", "부하 과다": "살펴볼 것",
+    "과훈련": "줄여야 할 것",
+    "상태 없음": "정상 진행",
+}
 
 
 def status_meta(status) -> tuple[str, str, str]:
