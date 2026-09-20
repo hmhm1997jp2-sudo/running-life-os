@@ -375,7 +375,7 @@ def init_db() -> None:
                 if name == "Athlete":
                     _retry(ws.append_row,
                            [str(DEFAULT_ATHLETE.get(c, "")) for c in cols],
-                           value_input_option="USER_ENTERED")
+                           value_input_option="RAW")
                 created.append(name)
 
         # 기존 시트의 헤더가 스키마보다 좁으면 넓힌다
@@ -512,11 +512,34 @@ def _bump():
 # ---------------------------------------------------------------------------
 # 쓰기
 # ---------------------------------------------------------------------------
-def _to_cells(df: pd.DataFrame, cols: list[str]) -> list[list[str]]:
+def _to_cells(df: pd.DataFrame, cols: list[str]) -> list[list]:
+    """시트에 넣을 값으로 바꿉니다.
+
+    숫자 컬럼은 진짜 숫자로, 나머지는 문자 그대로 보냅니다. 예전에는 전부
+    문자로 보내고 구글 시트가 알아서 해석하게 뒀는데(USER_ENTERED), 그러면
+    '48:28'(48분 28초)을 **48시간 28분**으로 바꿔 '48:28:00'으로 저장해
+    버립니다. 날짜도 지역 설정에 따라 '2026. 9. 20.'처럼 바뀝니다.
+    그래서 여기서 형을 정하고, 시트에는 RAW로 넣습니다.
+    """
     out = df.reindex(columns=cols).copy()
     out = out.replace([np.inf, -np.inf], np.nan)
-    return [["" if (pd.isna(v)) else str(v) for v in row]
-            for row in out.itertuples(index=False, name=None)]
+    rows = []
+    for row in out.itertuples(index=False, name=None):
+        cells = []
+        for col, v in zip(cols, row):
+            if v is None or (not isinstance(v, str) and pd.isna(v)):
+                cells.append("")
+            elif col in NUMERIC_COLS:
+                n = pd.to_numeric(v, errors="coerce")
+                if pd.isna(n):
+                    cells.append("")
+                else:
+                    f = float(n)
+                    cells.append(int(f) if f.is_integer() else f)
+            else:
+                cells.append(str(v))
+        rows.append(cells)
+    return rows
 
 
 def write_sheet(sheet: str, df: pd.DataFrame) -> None:
@@ -526,7 +549,7 @@ def write_sheet(sheet: str, df: pd.DataFrame) -> None:
         ws = _retry(_spreadsheet().worksheet, sheet)
         _retry(ws.clear)
         _retry(ws.update, range_name="A1", values=[cols] + _to_cells(df, cols),
-               value_input_option="USER_ENTERED")
+               value_input_option="RAW")
     else:
         xl = pd.ExcelFile(EXCEL_FILE)
         data = {s: (df.reindex(columns=cols) if s == sheet
@@ -543,7 +566,7 @@ def append_rows(sheet: str, new_df: pd.DataFrame) -> None:
     cols = SCHEMA.get(sheet, list(new_df.columns))
     if use_gsheets():
         ws = _retry(_spreadsheet().worksheet, sheet)
-        _retry(ws.append_rows, _to_cells(new_df, cols), value_input_option="USER_ENTERED")
+        _retry(ws.append_rows, _to_cells(new_df, cols), value_input_option="RAW")
         _bump()
     else:
         old = load_data(sheet)
