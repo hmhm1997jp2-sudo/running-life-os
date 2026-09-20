@@ -35,20 +35,20 @@ _REQUIRED = {
                            "TRAINING_STATUS", "TRAINING_STATUS_KR", "WATCH_MODEL",
                            "ZONE_MODELS", "age_from_birth", "assign_zones", "bpm_to_pct",
                            "build_alerts", "classify_laps", "daily_load_series", "decoupling",
-                           "decoupling_verdict", "detect_prs", "effective_vo2max",
-                           "efficiency_factor", "endurance_meta", "garmin_alerts",
-                           "garmin_race_predictions", "garmin_vs_computed", "has_watch_zones",
-                           "hill_meta", "intensity_distribution", "interval_shape",
-                           "lap_role_summary", "latest_garmin", "load_focus",
-                           "load_ratio_meta", "load_summary", "pace_str", "parse_time_str",
-                           "parse_zone_pcts", "predict_time", "preferred_zone_model",
-                           "prepare_workouts", "profile_changes", "profile_history",
-                           "race_plan", "readiness_factors", "readiness_meta",
-                           "recovery_meta", "recovery_remaining", "resolve_lthr",
-                           "set_watch_zones", "shoe_mileage", "stage_to_role", "status_meta",
-                           "time_str", "training_paces", "vdot_from_performance",
-                           "weekly_summary", "zone_bounds", "zone_history", "zone_pace_trend",
-                           "zone_segments", "zone_table"]),
+                           "decoupling_verdict", "detect_prs", "effective_load_ratio",
+                           "effective_vo2max", "efficiency_factor", "endurance_meta",
+                           "garmin_alerts", "garmin_race_predictions", "garmin_vs_computed",
+                           "has_watch_zones", "hill_meta", "intensity_distribution",
+                           "interval_shape", "lap_role_summary", "latest_garmin",
+                           "load_focus", "load_ratio_meta", "load_summary", "pace_str",
+                           "parse_time_str", "parse_zone_pcts", "predict_time",
+                           "preferred_zone_model", "prepare_workouts", "profile_changes",
+                           "profile_history", "race_plan", "readiness_factors",
+                           "readiness_meta", "recovery_meta", "recovery_remaining",
+                           "resolve_lthr", "set_watch_zones", "shoe_mileage", "stage_to_role",
+                           "status_meta", "time_str", "training_paces",
+                           "vdot_from_performance", "weekly_summary", "zone_bounds",
+                           "zone_history", "zone_pace_trend", "zone_segments", "zone_table"]),
     "ui.py":        (ui, ["bar", "boot", "card", "chart_height", "cols", "head", "hero",
                           "is_dark", "is_mobile", "item_list", "metrics", "mode_switch",
                           "pill", "rows", "tiles"]),
@@ -62,7 +62,7 @@ _stale = [(f, [a for a in attrs if not hasattr(m, a)]) for f, (m, attrs) in _REQ
 _need_cols = {"Laps": ["LapRole", "GapPaceSec"], "Athlete": ["RunZonePct"],
               "Workouts": ["GapPaceSec"],
               "DailyStatus": ["RecoveryUntil", "SleepHistory", "StressHistory",
-                              "EntryKind"],
+                              "EntryKind", "ChronicLoad"],
               "Shoes": ["InitialAsOf"]}
 _miss_cols = [f"{sh}.{c}" for sh, cs in _need_cols.items()
               for c in cs if c not in getattr(db, "SCHEMA", {}).get(sh, [])]
@@ -512,7 +512,7 @@ DAILY_TIMING_HELP = """
 | 지표 | 성격 |
 |---|---|
 | Training Status | 활동이 끝나면 갱신 |
-| Acute Load · Load Ratio | 최근 7일 누적이라 훈련 직후에 올라갑니다 |
+| 단기 부하 · 만성 부하 · 부하 비율 | 단기 부하는 최근 **7일 누적(가중 합)**, 만성 부하는 **28일** 기준. 훈련 직후에 올라갑니다 |
 | 주간 고강도 분 | 이번 주 누적 — 주중에 계속 늘어납니다 |
 
 **⏳ 회복 시간은 따로입니다** — 훈련이 끝난 순간부터 **계속 줄어드는 카운트다운**입니다.
@@ -532,10 +532,10 @@ DAILY_TIMING_HELP = """
 |---|---|---|
 | ① 밤사이 확정 | Readiness · 수면 점수 · HRV · 최근 수면 · 최근 스트레스 · 안정시 심박 · Body Battery | 아침 한 번 |
 | ② 훈련해야 갱신 | Training Status · 주간 고강도 분 | 훈련 후 |
-| ③ **본 시점의 값** | 단기 부하 · Load Ratio · 회복 시간 | 볼 때마다 |
+| ③ **본 시점의 값** | 단기 부하 · 만성 부하 · 회복 시간 | 볼 때마다 |
 
-③은 계속 움직입니다. 단기 부하는 최근 7일 롤링이라 훈련이 들어오면 올라가고 쉬면
-조금씩 내려갑니다. 회복 시간은 훈련 종료부터 줄어드는 카운트다운이고요.
+③은 계속 움직입니다. 단기 부하는 최근 7일을 **누적(가중 합)**한 값이라 훈련이
+들어오면 올라가고 쉬면 조금씩 내려갑니다(평균이 아닙니다). 회복 시간은 훈련 종료부터 줄어드는 카운트다운이고요.
 그래서 **아침 창과 훈련 후 창 양쪽에 있습니다** — 같은 값을 다른 시점에 본 것이고,
 앱은 **나중에 본 쪽**을 씁니다(본 시각까지 비교합니다).
 
@@ -1133,7 +1133,8 @@ with tab_today:
     # 설명이 "생산적 — ..." 처럼 상태 이름으로 시작하면, 큰 제목과 겹치니 앞부분을 뗍니다
     if desc.startswith(f"{kr} — "):
         desc = desc[len(kr) + 3:]
-    lr_tone, lr_txt = ana.load_ratio_meta(G.get("LoadRatio"))
+    _lr_val, _lr_src = ana.effective_load_ratio(G)
+    lr_tone, lr_txt = ana.load_ratio_meta(_lr_val)
     # 회복 시간은 계속 줄어드는 값이라, 입력 시각을 기준으로 '지금 남은 시간'을 다시 계산
     rc_left, rc_raw, rc_until, rc_live = ana.recovery_remaining(G)
     rc_tone, rc_txt = ana.recovery_meta(rc_left)
@@ -1228,15 +1229,20 @@ with tab_today:
     # ─────────────────────────────────────────────────────────────────
     _load_keys = ["AcuteLoad", "LoadRatio", "RecoveryTimeHr", "IntensityMinutes"]
     section("가민 · 트레이닝 부하 (본 시점의 값)", seen_at(_load_keys))
-    _al_s, _al_t = aged("AcuteLoad")
+    _ch_v = pd.to_numeric(G.get("ChronicLoad"), errors="coerce")
+    _al_s, _al_t = aged("AcuteLoad",
+                        (f"만성 {_ch_v:,.0f}" if np.isfinite(_ch_v) and _ch_v > 0
+                         else None))
     _lr_s, _lr_t = aged("LoadRatio", lr_txt, lr_tone)
+    if _lr_src == "계산":
+        _lr_s = (f"{_lr_s} · 급성÷만성" if _lr_s else "급성÷만성")
     _rc_s, _rc_t = (rc_txt, rc_tone) if rc_live else aged("RecoveryTimeHr", rc_txt, rc_tone)
     _im_s, _im_t = aged("IntensityMinutes")
     ui.tiles([
-        {"label": "Acute Load", "value": gv("AcuteLoad", "{:,.0f}"),
+        {"label": "단기 부하 (7일 누적)", "value": gv("AcuteLoad", "{:,.0f}"),
          "sub": _al_s, "tone": _al_t,
          "spark": hist_series(df_daily, "StatusDate", "AcuteLoad")},
-        {"label": "Load Ratio", "value": gv("LoadRatio", "{:.2f}"),
+        {"label": "부하 비율", "value": (f"{_lr_val:.2f}" if np.isfinite(_lr_val) else "—"),
          "sub": _lr_s, "tone": _lr_t,
          "spark": hist_series(df_daily, "StatusDate", "LoadRatio")},
         {"label": "회복 시간" + (" (지금 기준)" if rc_live else ""),
@@ -1436,6 +1442,9 @@ with tab_today:
                     "값이 양수(**＋**)면 몸이 가볍고(회복됨), 음수(**－**)면 무겁습니다. "
                     "−10 ~ −30은 한창 훈련 중인 정상 구간, −30 아래는 과부하 신호, "
                     "대회 당일은 **＋5 ~ ＋15 사이**가 이상적입니다.\n"
+                    "- ⚠️ **가민의 ‘단기 부하’와 여기 ATL은 다른 값**입니다. 가민은 "
+                    "최근 7일 부하를 **누적(합)**한 값이고, ATL은 같은 7일을 **가중 "
+                    "평균**한 값이라 숫자 크기 자체가 다릅니다. 서로 비교하지 마세요.\n"
                     "- **ACWR = 최근 7일 부하 ÷ 최근 28일 주간 평균 부하** — "
                     "부하를 **얼마나 갑자기 늘렸는지**. **0.8 ~ 1.3**이 권장 구간이고, "
                     "**1.5 이상**이면 부상 위험이 뚜렷하게 올라갑니다. "
@@ -2130,16 +2139,18 @@ with tab_log:
                         unsafe_allow_html=True)
                     m3 = ui.cols(3, 2, keep_row=True)
                     a_ac = grid_at(m3, 0, 3).number_input(
-                        "단기 부하", 0, 2000, 0, key="am_acute",
-                        help="가민 준비 상태 화면의 ‘단기 부하’. 최근 7일 롤링이라 "
-                             "훈련이 들어오면 올라가고 쉬면 조금씩 내려갑니다.")
-                    a_lr = grid_at(m3, 1, 3).number_input(
-                        "Load Ratio", 0.0, 5.0, 0.0, 0.01, key="am_ratio",
-                        help="단기 부하 옆의 판정(최적/부족/과다)을 숫자로 보고 싶을 때. "
-                             "모르면 비워두세요.")
+                        "단기 부하 (급성)", 0, 3000, 0, key="am_acute",
+                        help="최근 7일 운동 부하의 **누적(가중 합)**입니다 — 평균이 "
+                             "아닙니다. 훈련이 들어오면 올라가고 쉬면 조금씩 내려갑니다.")
+                    a_ch = grid_at(m3, 1, 3).number_input(
+                        "만성 부하", 0, 3000, 0, key="am_chronic",
+                        help="최근 28일 기준의 장기 부하. ‘부하 비율’ 화면 위에 "
+                             "급성과 나란히 떠 있습니다. 넣어두면 **부하 비율은 "
+                             "자동으로 계산**됩니다.")
                     a_rec = grid_at(m3, 2, 3).number_input(
                         "회복 시간 (h)", 0, 200, 0, key="am_rec",
                         help="아침에 본 값이면 기상 시각 기준으로 줄어듭니다.")
+                    a_lr = round(a_ac / a_ch, 3) if (a_ac and a_ch) else 0
                     nt = st.text_input("메모", "", key="am_note")
                     if st.form_submit_button("저장", width="stretch", type="primary"):
                         _at = datetime.combine(dd_, dtime(int(mhour), 0))
@@ -2154,7 +2165,8 @@ with tab_log:
                              "SleepScore": slp or "", "RestingHR": rhr or "",
                              "SleepHistory": "" if slh == "(미입력)" else slh,
                              "StressHistory": "" if sth == "(미입력)" else sth,
-                             "AcuteLoad": a_ac or "", "LoadRatio": a_lr or "",
+                             "AcuteLoad": a_ac or "", "ChronicLoad": a_ch or "",
+                             "LoadRatio": a_lr or "",
                              "RecoveryTimeHr": a_rec or "",
                              "RecoveryUntil": _am_until,
                              "Notes": nt,
@@ -2183,16 +2195,18 @@ with tab_log:
                         key="pm_ts", help="훈련이 끝나야 갱신됩니다.")
                     p1 = ui.cols(4, 2, keep_row=True)
                     acute = grid_at(p1, 0, 4).number_input(
-                        "Acute Load", 0, 2000, 0, key="pm_acute",
-                        help="Connect → 트레이닝 상태 → 부하. 최근 7일 누적입니다.")
-                    ratio = grid_at(p1, 1, 4).number_input(
-                        "Load Ratio", 0.0, 5.0, 0.0, 0.01, key="pm_ratio",
-                        help="급성:만성 부하비. 가민 권장 0.8~1.5")
+                        "단기 부하 (급성)", 0, 3000, 0, key="pm_acute",
+                        help="최근 7일 운동 부하의 **누적(가중 합)** — 평균이 아닙니다.")
+                    chron = grid_at(p1, 1, 4).number_input(
+                        "만성 부하", 0, 3000, 0, key="pm_chronic",
+                        help="최근 28일 기준의 장기 부하. 넣어두면 부하 비율은 "
+                             "자동으로 계산됩니다.")
                     rec = grid_at(p1, 2, 4).number_input(
                         "회복 시간 (h)", 0, 200, 0, key="pm_rec")
                     im = grid_at(p1, 3, 4).number_input(
                         "고강도 분 (주간)", 0, 1000, 0, key="pm_im",
                         help="이번 주 누적이라 주중에 계속 늘어납니다.")
+                    ratio = round(acute / chron, 3) if (acute and chron) else 0
                     nt = st.text_input("메모", "", key="pm_note")
                     if st.form_submit_button("저장", width="stretch", type="primary"):
                         _at = datetime.combine(dd_, dtime(int(mhour), 0))
@@ -2202,7 +2216,8 @@ with tab_log:
                             "DailyStatus",
                             {"StatusDate": dd_.strftime("%Y-%m-%d"), "EntryKind": "훈련 후"},
                             {"StatusID": new_id("DS"), "TrainingStatus": ts,
-                             "AcuteLoad": acute or "", "LoadRatio": ratio or "",
+                             "AcuteLoad": acute or "", "ChronicLoad": chron or "",
+                             "LoadRatio": ratio or "",
                              "RecoveryTimeHr": rec or "", "IntensityMinutes": im or "",
                              "Notes": nt,
                              "MeasuredAt": f"{_at:%Y-%m-%d %H:%M} (훈련 직후)",
@@ -2240,8 +2255,9 @@ with tab_log:
                        f" · {r.get('TrainingStatus','') or r.get('HRVStatus','') or '—'}"),
             [("StatusDate", "date", "날짜", None),
              ("TrainingStatus", "select", "Training Status", list(ana.TRAINING_STATUS)),
-             ("AcuteLoad", "numopt", "Acute Load", None),
-             ("LoadRatio", "numopt", "Load Ratio", None),
+             ("AcuteLoad", "numopt", "단기 부하 (급성)", None),
+             ("ChronicLoad", "numopt", "만성 부하", None),
+             ("LoadRatio", "numopt", "부하 비율 (비우면 자동 계산)", None),
              ("RecoveryTimeHr", "numopt", "회복 시간 (h)", None),
              ("TrainingReadiness", "numopt", "Readiness", None),
              ("BodyBattery", "numopt", "Body Battery", None),
@@ -2841,22 +2857,22 @@ with tab_ana:
 
                 with ui.card("gload"):
                     ui.head("📊 가민 부하 추이",
-                            "위 = Acute Load, 아래 = Load Ratio (권장 0.8~1.5) · 날짜 축 공유")
+                            "위 = 단기 부하(7일 누적), 아래 = 부하 비율 · 날짜 축 공유")
                     ld = gdv[["StatusDate", "AcuteLoad", "LoadRatio"]].dropna(how="all",
                                                                              subset=["AcuteLoad", "LoadRatio"])
                     if not ld.empty:
                         # 단위가 다른 두 지표는 축을 겹치지 않고 위아래로 나눕니다
                         _lx = date_axis(_span_days(ld["StatusDate"]))
                         _lt = [alt.Tooltip("StatusDate:T", title="날짜", format="%Y-%m-%d"),
-                               alt.Tooltip("AcuteLoad:Q", title="Acute Load", format=",d"),
-                               alt.Tooltip("LoadRatio:Q", title="Load Ratio", format=".2f")]
+                               alt.Tooltip("AcuteLoad:Q", title="단기 부하", format=",d"),
+                               alt.Tooltip("LoadRatio:Q", title="부하 비율", format=".2f")]
                         bars = alt.Chart(ld).mark_bar(color=C["primary"]).encode(
                             x=alt.X("StatusDate:T", title=None, axis=X_HIDDEN),
                             y=alt.Y("AcuteLoad:Q", title=None,
                                     axis=alt.Axis(format=",d", tickMinStep=1)),
                             tooltip=_lt).properties(height=ui.chart_height(180, 145),
-                                                    title=panel_title("Acute Load"))
-                        band = alt.Chart(pd.DataFrame({"lo": [0.8], "hi": [1.5]})).mark_rect(
+                                                    title=panel_title("단기 부하 (최근 7일 누적)"))
+                        band = alt.Chart(pd.DataFrame({"lo": [0.8], "hi": [1.4]})).mark_rect(
                             opacity=.10, color=C["teal"]).encode(y="lo:Q", y2="hi:Q")
                         ln = alt.Chart(ld).mark_line(color=C["accent"], point=True).encode(
                             x=alt.X("StatusDate:T", title=None, axis=_lx),
@@ -2865,10 +2881,10 @@ with tab_ana:
                                     axis=alt.Axis(format=".2f")),
                             tooltip=_lt).properties(height=ui.chart_height(110, 92))
                         stacked_charts([bars, (band + ln).properties(
-                            title=panel_title("Load Ratio (권장 0.8~1.5)"))])
-                        st.caption("초록 띠 = Load Ratio 권장 구간(0.8~1.5)")
+                            title=panel_title("부하 비율 (최적 0.8~1.4)"))])
+                        st.caption("초록 띠 = 부하 비율 최적 구간(0.8~1.4)")
                     else:
-                        st.caption("Acute Load / Load Ratio 입력 기록이 없습니다.")
+                        st.caption("단기 부하 / 부하 비율 입력 기록이 없습니다.")
 
                 gg = ui.cols(2, 1)
                 with gg[0]:
