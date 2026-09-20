@@ -53,7 +53,9 @@ SCHEMA: dict[str, list[str]] = {
                     "MeasuredAt", "RecoveryUntil",
                     # 맨 뒤에 추가 — 가민 '트레이닝 준비 상태'의 나머지 두 요인과
                     # 이 줄이 아침 체크인인지 훈련 후 체크인인지
-                    "SleepHistory", "StressHistory", "EntryKind"],
+                    "SleepHistory", "StressHistory", "EntryKind",
+                    # 맨 뒤에 추가 — 가민 '만성 부하'(최근 28일). 부하 비율의 분모.
+                    "ChronicLoad"],
     # ── 프로필·지표 변경 이력 (날짜별 스냅샷) ─────────────────────────────
     #    체중/심박/LTHR 이 바뀐 시점을 남기면 과거 훈련은 그 시점 값으로 계산됩니다.
     "Metrics": ["MetricID", "MetricDate", "HRRest", "HRMax", "VO2Max", "FitnessAge",
@@ -95,7 +97,7 @@ NUMERIC_COLS = {
     "WeightKg", "BodyFatPct", "VO2Max", "LTPower", "InitialDistanceKm",
     "TargetDistanceKm",
     # 가민 지표
-    "AcuteLoad", "LoadRatio", "RecoveryTimeHr", "HRVms", "IntensityMinutes",
+    "AcuteLoad", "ChronicLoad", "LoadRatio", "RecoveryTimeHr", "HRVms", "IntensityMinutes",
     "HRRest", "HRMax",
     "FitnessAge", "EnduranceScore", "HillScore",
     "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
@@ -143,6 +145,11 @@ LEGACY_SCHEMAS: dict[str, dict[int, list[str]]] = {
              "RecoveryTimeHr", "TrainingReadiness", "BodyBattery",
              "HRVStatus", "HRVms", "SleepScore", "RestingHR",
              "IntensityMinutes", "Notes"],
+        19: ["StatusID", "StatusDate", "TrainingStatus", "AcuteLoad", "LoadRatio",
+             "RecoveryTimeHr", "TrainingReadiness", "BodyBattery",
+             "HRVStatus", "HRVms", "SleepScore", "RestingHR",
+             "IntensityMinutes", "Notes", "MeasuredAt", "RecoveryUntil",
+             "SleepHistory", "StressHistory", "EntryKind"],
         16: ["StatusID", "StatusDate", "TrainingStatus", "AcuteLoad", "LoadRatio",
              "RecoveryTimeHr", "TrainingReadiness", "BodyBattery",
              "HRVStatus", "HRVms", "SleepScore", "RestingHR",
