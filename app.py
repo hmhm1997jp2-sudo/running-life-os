@@ -1233,9 +1233,13 @@ with tab_today:
     _al_s, _al_t = aged("AcuteLoad",
                         (f"만성 {_ch_v:,.0f}" if np.isfinite(_ch_v) and _ch_v > 0
                          else None))
-    _lr_s, _lr_t = aged("LoadRatio", lr_txt, lr_tone)
     if _lr_src == "계산":
-        _lr_s = (f"{_lr_s} · 급성÷만성" if _lr_s else "급성÷만성")
+        # 계산값은 급성·만성을 본 시점의 값이라 '며칠 전' 표시가 따로 필요 없습니다
+        _lr_s, _lr_t = "급성÷만성", lr_tone
+    elif _lr_src == "만성 부하 필요":
+        _lr_s, _lr_t = "만성 부하를 넣으면 계산됩니다", "warn"
+    else:
+        _lr_s, _lr_t = aged("LoadRatio", lr_txt, lr_tone)
     _rc_s, _rc_t = (rc_txt, rc_tone) if rc_live else aged("RecoveryTimeHr", rc_txt, rc_tone)
     _im_s, _im_t = aged("IntensityMinutes")
     ui.tiles([
@@ -2257,7 +2261,7 @@ with tab_log:
              ("TrainingStatus", "select", "Training Status", list(ana.TRAINING_STATUS)),
              ("AcuteLoad", "numopt", "단기 부하 (급성)", None),
              ("ChronicLoad", "numopt", "만성 부하", None),
-             ("LoadRatio", "numopt", "부하 비율 (비우면 자동 계산)", None),
+             ("LoadRatio", "numopt", "부하 비율 (급성·만성 넣으면 자동)", None),
              ("RecoveryTimeHr", "numopt", "회복 시간 (h)", None),
              ("TrainingReadiness", "numopt", "Readiness", None),
              ("BodyBattery", "numopt", "Body Battery", None),
@@ -2270,7 +2274,13 @@ with tab_log:
              ("SleepHistory", "select", "최근 수면 점수", SLEEP_HIST_OPTS),
              ("StressHistory", "select", "최근 스트레스", STRESS_HIST_OPTS),
              ("Notes", "area", "메모", None)],
-            key="daily")
+            key="daily",
+            # 급성·만성이 둘 다 있으면 비율은 저장할 때 다시 계산합니다.
+            # (직접 넣은 값이 있어도 계산값이 더 정확해서 덮어씁니다)
+            derive=lambda v: ({"LoadRatio": round(fnum(v.get("AcuteLoad"))
+                                                  / fnum(v.get("ChronicLoad")), 3)}
+                              if fnum(v.get("AcuteLoad")) > 0
+                              and fnum(v.get("ChronicLoad")) > 0 else {}))
 
     # ── 2-4 가민 측정 기록 ────────────────────────────────────────────────────────
     with a3:
