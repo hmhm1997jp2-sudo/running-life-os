@@ -1042,7 +1042,8 @@ def latest_garmin(df_daily: pd.DataFrame, df_metrics: pd.DataFrame) -> dict:
     """가민 일일/주간 지표에서 '가장 최근에 입력된 값'을 필드별로 모읍니다.
     필드마다 입력 주기가 다르므로 행 단위가 아니라 컬럼 단위로 최신값을 찾습니다."""
     out = {}
-    daily_fields = ["TrainingStatus", "AcuteLoad", "LoadRatio", "RecoveryTimeHr",
+    daily_fields = ["TrainingStatus", "AcuteLoad", "ChronicLoad", "LoadRatio",
+                    "RecoveryTimeHr",
                     "TrainingReadiness", "BodyBattery", "HRVStatus", "HRVms",
                     "SleepScore", "RestingHR", "IntensityMinutes",
                     "MeasuredAt", "RecoveryUntil",
@@ -1096,16 +1097,20 @@ def readiness_factors(g: dict) -> list[dict]:
     rec_state = ("" if not np.isfinite(rec_h) else
                  "낮은 필요성" if rec_h <= 12 else
                  "중간 필요성" if rec_h <= 36 else "높은 필요성")
-    _, lr_txt = load_ratio_meta(g.get("LoadRatio"))
-    lr_state = {"최적 구간": "최적"}.get(lr_txt, lr_txt if g.get("LoadRatio") else "")
+    _, lr_txt = load_ratio_meta(effective_load_ratio(g)[0])
+    lr_state = (lr_txt.split(" —")[0]
+                if np.isfinite(effective_load_ratio(g)[0]) else "")
     slp = _num(g.get("SleepScore"), np.nan)
     slp_state = ("" if not np.isfinite(slp) or slp <= 0 else
                  "좋음" if slp >= 80 else "보통" if slp >= 60 else "나쁨")
 
+    _ch = _num(g.get("ChronicLoad"), np.nan)
+    _ac_note = ("최근 7일 누적" if not np.isfinite(_ch) or _ch <= 0
+                else f"최근 7일 누적 · 만성 {_ch:,.0f}")
     rows = [("수면 점수", num("SleepScore"), slp_state, "지난밤"),
             ("회복 시간", num("RecoveryTimeHr", "{:.0f}", "h"), rec_state, "지금 기준"),
             ("HRV 상태", num("HRVms", "{:.0f}", " ms"), hrv_kr, "밤사이 평균"),
-            ("단기 부하", num("AcuteLoad", "{:,.0f}"), lr_state, "최근 7일"),
+            ("단기 부하", num("AcuteLoad", "{:,.0f}"), lr_state, _ac_note),
             ("최근 수면 점수", "", str(g.get("SleepHistory") or ""), "최근 3일"),
             ("최근 스트레스", "", str(g.get("StressHistory") or ""), "최근 3일")]
     out = []
@@ -1141,16 +1146,35 @@ def status_meta(status) -> tuple[str, str, str]:
     return tone, TRAINING_STATUS_KR.get(s, s or "—"), desc
 
 
+def effective_load_ratio(g: dict) -> tuple[float, str]:
+    """부하 비율 = 급성 ÷ 만성.
+
+    두 값을 다 받아 두면 직접 계산합니다. 시계 화면은 비율을 소수 한 자리로
+    반올림해 보여주므로(624/712 = 0.88 → '0.8'), 계산한 값이 더 정확합니다.
+    만성 부하가 없으면 입력해 둔 비율을 그대로 씁니다.
+    반환: (비율, "계산" | "입력" | "")
+    """
+    ac = _num(g.get("AcuteLoad"), np.nan)
+    ch = _num(g.get("ChronicLoad"), np.nan)
+    if np.isfinite(ac) and np.isfinite(ch) and ch > 0:
+        return ac / ch, "계산"
+    r = _num(g.get("LoadRatio"), np.nan)
+    return (r, "입력") if np.isfinite(r) else (np.nan, "")
+
+
 def load_ratio_meta(ratio) -> tuple[str, str]:
-    """가민 Load Ratio(급성:만성) 해석. 가민 권장 구간은 대략 0.8~1.5."""
+    """가민 부하 비율(급성 ÷ 만성) 해석 — 시계 설명서의 구간을 그대로 씁니다.
+    0.8 미만 낮음 · 0.8~1.4 최적 · 1.5~1.9 높음 · 2.0 이상 매우 높음."""
     r = _num(ratio, np.nan)
     if not np.isfinite(r):
         return "info", "미입력"
     if r < 0.8:
-        return "warn", "부하 부족 — 기량 유지가 어려움"
-    if r <= 1.5:
-        return "ok", "최적 구간"
-    return "bad", "부하 과다 — 회복 우선"
+        return "warn", "낮음 — 단기 부하가 평소보다 적음"
+    if r < 1.5:
+        return "ok", "최적"
+    if r < 2.0:
+        return "warn", "높음 — 늘리는 속도 주의"
+    return "bad", "매우 높음 — 회복 우선"
 
 
 def recovery_remaining(g: dict, now=None):
