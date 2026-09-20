@@ -50,7 +50,10 @@ SCHEMA: dict[str, list[str]] = {
                     "HRVStatus", "HRVms", "SleepScore", "RestingHR",
                     "IntensityMinutes", "Notes",
                     # 맨 뒤에 추가 — 입력 시각과 회복 완료 예상 시각
-                    "MeasuredAt", "RecoveryUntil"],
+                    "MeasuredAt", "RecoveryUntil",
+                    # 맨 뒤에 추가 — 가민 '트레이닝 준비 상태'의 나머지 두 요인과
+                    # 이 줄이 아침 체크인인지 훈련 후 체크인인지
+                    "SleepHistory", "StressHistory", "EntryKind"],
     # ── 프로필·지표 변경 이력 (날짜별 스냅샷) ─────────────────────────────
     #    체중/심박/LTHR 이 바뀐 시점을 남기면 과거 훈련은 그 시점 값으로 계산됩니다.
     "Metrics": ["MetricID", "MetricDate", "HRRest", "HRMax", "VO2Max", "FitnessAge",
@@ -132,6 +135,14 @@ LEGACY_SCHEMAS: dict[str, dict[int, list[str]]] = {
     "DailyStatus": {
         8:  ["StatusID", "StatusDate", "TrainingReadiness", "BodyBattery",
              "HRVStatus", "SleepScore", "RestingHR", "Notes"],
+        14: ["StatusID", "StatusDate", "TrainingStatus", "AcuteLoad", "LoadRatio",
+             "RecoveryTimeHr", "TrainingReadiness", "BodyBattery",
+             "HRVStatus", "HRVms", "SleepScore", "RestingHR",
+             "IntensityMinutes", "Notes"],
+        16: ["StatusID", "StatusDate", "TrainingStatus", "AcuteLoad", "LoadRatio",
+             "RecoveryTimeHr", "TrainingReadiness", "BodyBattery",
+             "HRVStatus", "HRVms", "SleepScore", "RestingHR",
+             "IntensityMinutes", "Notes", "MeasuredAt", "RecoveryUntil"],
     },
     "Laps": {
         11: ["LapID", "WorkoutID", "LapNo", "DistanceKm", "DurationMinutes",
@@ -550,6 +561,40 @@ def export_excel_bytes() -> bytes:
 # ---------------------------------------------------------------------------
 # 선수 프로필 헬퍼
 # ---------------------------------------------------------------------------
+def upsert_row(sheet: str, match: dict, row: dict) -> str:
+    """match 조건에 맞는 줄이 있으면 그 줄을 고치고, 없으면 새로 추가합니다.
+
+    아침 체크인처럼 '하루에 한 번 확정되는' 값은 같은 날 다시 넣으면 줄이 쌓이지
+    않고 갱신되어야 합니다. 빈 값('')은 덮어쓰지 않습니다 — 일부만 다시 넣어도
+    앞서 넣은 값이 지워지지 않게 하기 위해서입니다.
+    반환값: "updated" 또는 "added".
+    """
+    df = load_data(sheet)
+    if not df.empty:
+        hit = pd.Series(True, index=df.index)
+        for k, v in match.items():
+            if k not in df.columns:
+                hit = pd.Series(False, index=df.index)
+                break
+            hit &= df[k].astype(str).str.strip() == str(v).strip()
+        if bool(hit.any()):
+            _id_col = (SCHEMA.get(sheet) or [None])[0]   # 갱신 시 ID는 유지
+            for col, v in row.items():
+                if col in match or col == _id_col or v in ("", None):
+                    continue
+                if col not in df.columns:
+                    df[col] = ""
+                try:
+                    df.loc[hit, col] = v
+                except (TypeError, ValueError):
+                    df[col] = df[col].astype(object)
+                    df.loc[hit, col] = v
+            write_sheet(sheet, df)
+            return "updated"
+    append_rows(sheet, pd.DataFrame([{**match, **row}]))
+    return "added"
+
+
 def get_athlete() -> dict:
     df = load_data("Athlete")
     if df.empty:
