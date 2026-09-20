@@ -1372,8 +1372,43 @@ def age_from_birth(birth) -> float:
         return float("nan")
 
 
+# 종목별로 '말이 되는' 최대 기록(시간). 이보다 크면 잘못 저장된 값으로 봅니다.
+_PRED_MAX_H = {"Pred5K": 1.5, "Pred10K": 3.0, "PredHalf": 6.0, "PredFull": 12.0}
+
+
+def fix_race_pred(txt, key: str) -> str:
+    """구글 시트가 시간으로 오해해 저장한 예측 기록을 되돌립니다.
+
+    '48:28'(48분 28초)을 시트가 48시간 28분으로 읽어 '48:28:00'으로 저장하는
+    일이 있었습니다. 종목별 상식 범위를 넘으면 맨 뒤 칸을 떼고 다시 읽습니다.
+    (10km 48시간은 있을 수 없으니 48:28 = 48분 28초로 봅니다.)
+    """
+    t = str(txt or "").strip()
+    if not t or t == "—":
+        return "—"
+    parts = t.split(":")
+    if len(parts) < 2:
+        return t
+    try:
+        nums = [float(x) for x in parts]
+    except ValueError:
+        return t
+    hours = (nums[0] + nums[1] / 60 + (nums[2] / 3600 if len(nums) > 2 else 0)
+             if len(nums) >= 3 else nums[0] / 60 + nums[1] / 3600)
+    cap = _PRED_MAX_H.get(key, 12.0)
+    if hours <= cap:
+        return t
+    # 맨 뒤 칸을 떼고(보통 ':00') 다시 읽어 봅니다
+    if len(parts) >= 3 and float(parts[-1]) == 0:
+        shorter = ":".join(parts[:-1])
+        n2 = [float(x) for x in parts[:-1]]
+        if (n2[0] / 60 + n2[1] / 3600) <= cap:
+            return shorter
+    return t
+
+
 def garmin_race_predictions(g: dict) -> list[tuple[str, str]]:
-    return [(n, str(g.get(k) or "—")) for n, k in
+    return [(n, fix_race_pred(g.get(k), k)) for n, k in
             [("5km", "Pred5K"), ("10km", "Pred10K"),
              ("Half Marathon", "PredHalf"), ("Full Marathon", "PredFull")]]
 
