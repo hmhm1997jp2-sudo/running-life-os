@@ -1158,7 +1158,16 @@ def effective_load_ratio(g: dict) -> tuple[float, str]:
     ch = _num(g.get("ChronicLoad"), np.nan)
     if np.isfinite(ac) and np.isfinite(ch) and ch > 0:
         return ac / ch, "계산"
+    # 저장된 비율이 지금 보는 '급성 부하'보다 오래된 것이면 쓰지 않습니다.
+    # (예전 날짜의 1.43을 오늘 값인 것처럼 보여주면 안 됩니다)
     r = _num(g.get("LoadRatio"), np.nan)
+    r_at, a_at = g.get("LoadRatio_at"), g.get("AcuteLoad_at")
+    if np.isfinite(r) and r_at is not None and a_at is not None:
+        try:
+            if pd.Timestamp(r_at) < pd.Timestamp(a_at):
+                return np.nan, "만성 부하 필요"
+        except Exception:
+            pass
     return (r, "입력") if np.isfinite(r) else (np.nan, "")
 
 
