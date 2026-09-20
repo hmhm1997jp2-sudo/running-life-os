@@ -63,7 +63,11 @@ SCHEMA: dict[str, list[str]] = {
                 "LTPace", "LTHR", "LTPower",
                 "WeightKg", "BodyFatPct", "Notes"],
     "Shoes": ["ShoeID", "ShoeName", "Brand", "PurchaseDate", "InitialDistanceKm",
-              "TargetDistanceKm", "Status", "Category", "Notes"],
+              "TargetDistanceKm", "Status", "Category", "Notes",
+              # 맨 뒤에 추가 — '기존 누적'이 어느 날짜까지를 포함한 값인지.
+              # 이 날짜 이후의 훈련만 더해서, 예전 기록을 나중에 넣어도
+              # 거리가 두 번 세어지지 않게 합니다.
+              "InitialAsOf"],
     "Races": ["RaceID", "ProjectID", "RaceDate", "RaceName", "Distance", "DistanceKm",
               "GoalTime", "ActualTime", "ShoeID", "ResultStatus", "Notes"],
     # ── 랩(구간) 기록 — 활동 상세 CSV를 올리면 함께 저장됩니다 ───────────
