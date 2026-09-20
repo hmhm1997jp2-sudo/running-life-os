@@ -294,7 +294,10 @@ def set_cells(df: pd.DataFrame, idx, values: dict) -> None:
 def record_editor(sheet: str, id_col: str, label_fn, fields, key: str,
                   derive=None, title: str = "✏️ 수정 / 삭제",
                   row_filter=None, empty_msg: str | None = None,
-                  default_open: bool = False, note: str | None = None) -> None:
+                  default_open: bool = False, note: str | None = None,
+                  preview=None) -> None:
+    """preview(vals) -> str : 저장 버튼 위에 보여줄 한 줄.
+    자동으로 계산되는 값(예: 부하 비율)을 저장 전에 확인시키는 용도입니다."""
     df = db.load_data(sheet)          # 저장/삭제는 항상 전체 df 기준 (다른 행 유실 방지)
     if df.empty:
         return
@@ -381,6 +384,10 @@ def record_editor(sheet: str, id_col: str, label_fn, fields, key: str,
                     else:
                         vals[col] = c.text_input(label, str(cur or ""), key=f"{wk}_{col}")
 
+                if preview:
+                    _pv = preview(vals)
+                    if _pv:
+                        st.caption(_pv)
                 confirm = st.checkbox("🗑️ 삭제하려면 먼저 체크하세요", key=f"del_{wk}")
                 if ui.is_mobile():
                     save = st.form_submit_button("💾 저장", width="stretch", type="primary")
@@ -512,7 +519,7 @@ DAILY_TIMING_HELP = """
 | 지표 | 성격 |
 |---|---|
 | Training Status | 활동이 끝나면 갱신 |
-| 단기 부하 · 만성 부하 · 부하 비율 | 단기 부하는 최근 **7일 누적(가중 합)**, 만성 부하는 **28일** 기준. 훈련 직후에 올라갑니다 |
+| 단기 부하 · 만성 부하 | 단기 = 최근 **7일 누적(가중 합)**, 만성 = **평소 한 주치**(4주 평균). 둘은 같은 저울 위의 값이라 비율이 1 근처에서 뜻을 갖습니다 |
 | 주간 고강도 분 | 이번 주 누적 — 주중에 계속 늘어납니다 |
 
 **⏳ 회복 시간은 따로입니다** — 훈련이 끝난 순간부터 **계속 줄어드는 카운트다운**입니다.
@@ -1446,6 +1453,10 @@ with tab_today:
                     "값이 양수(**＋**)면 몸이 가볍고(회복됨), 음수(**－**)면 무겁습니다. "
                     "−10 ~ −30은 한창 훈련 중인 정상 구간, −30 아래는 과부하 신호, "
                     "대회 당일은 **＋5 ~ ＋15 사이**가 이상적입니다.\n"
+                    "- **가민 만성 부하** — ‘평소 한 주치 부하’입니다(4주 평균). "
+                    "28일치 합이 아니라 급성과 같은 저울 위의 값이라, "
+                    "**급성 ÷ 만성 = 1**이면 이번 주가 평소만큼, "
+                    "**1.2**면 20% 무겁다는 뜻입니다.\n"
                     "- ⚠️ **가민의 ‘단기 부하’와 여기 ATL은 다른 값**입니다. 가민은 "
                     "최근 7일 부하를 **누적(합)**한 값이고, ATL은 같은 7일을 **가중 "
                     "평균**한 값이라 숫자 크기 자체가 다릅니다. 서로 비교하지 마세요.\n"
@@ -2148,9 +2159,9 @@ with tab_log:
                              "아닙니다. 훈련이 들어오면 올라가고 쉬면 조금씩 내려갑니다.")
                     a_ch = grid_at(m3, 1, 3).number_input(
                         "만성 부하", 0, 3000, 0, key="am_chronic",
-                        help="최근 28일 기준의 장기 부하. ‘부하 비율’ 화면 위에 "
-                             "급성과 나란히 떠 있습니다. 넣어두면 **부하 비율은 "
-                             "자동으로 계산**됩니다.")
+                        help="**평소 한 주치 부하**입니다 — 28일치를 다 더한 값이 "
+                             "아니라 한 주 단위로 환산한 평균이라, 급성과 비슷한 "
+                             "크기로 나옵니다. 넣어두면 부하 비율이 자동 계산됩니다.")
                     a_rec = grid_at(m3, 2, 3).number_input(
                         "회복 시간 (h)", 0, 200, 0, key="am_rec",
                         help="아침에 본 값이면 기상 시각 기준으로 줄어듭니다.")
@@ -2203,8 +2214,9 @@ with tab_log:
                         help="최근 7일 운동 부하의 **누적(가중 합)** — 평균이 아닙니다.")
                     chron = grid_at(p1, 1, 4).number_input(
                         "만성 부하", 0, 3000, 0, key="pm_chronic",
-                        help="최근 28일 기준의 장기 부하. 넣어두면 부하 비율은 "
-                             "자동으로 계산됩니다.")
+                        help="**평소 한 주치 부하**(4주 평균). 급성과 같은 저울 위의 "
+                             "값이라 비슷한 크기로 나옵니다. 넣어두면 부하 비율이 "
+                             "자동 계산됩니다.")
                     rec = grid_at(p1, 2, 4).number_input(
                         "회복 시간 (h)", 0, 200, 0, key="pm_rec")
                     im = grid_at(p1, 3, 4).number_input(
@@ -2261,7 +2273,6 @@ with tab_log:
              ("TrainingStatus", "select", "Training Status", list(ana.TRAINING_STATUS)),
              ("AcuteLoad", "numopt", "단기 부하 (급성)", None),
              ("ChronicLoad", "numopt", "만성 부하", None),
-             ("LoadRatio", "numopt", "부하 비율 (급성·만성 넣으면 자동)", None),
              ("RecoveryTimeHr", "numopt", "회복 시간 (h)", None),
              ("TrainingReadiness", "numopt", "Readiness", None),
              ("BodyBattery", "numopt", "Body Battery", None),
@@ -2280,7 +2291,12 @@ with tab_log:
             derive=lambda v: ({"LoadRatio": round(fnum(v.get("AcuteLoad"))
                                                   / fnum(v.get("ChronicLoad")), 3)}
                               if fnum(v.get("AcuteLoad")) > 0
-                              and fnum(v.get("ChronicLoad")) > 0 else {}))
+                              and fnum(v.get("ChronicLoad")) > 0 else {}),
+            preview=lambda v: (
+                f"부하 비율 **{fnum(v.get('AcuteLoad')) / fnum(v.get('ChronicLoad')):.2f}** "
+                f"— 급성 ÷ 만성으로 저장할 때 자동 계산됩니다"
+                if fnum(v.get("AcuteLoad")) > 0 and fnum(v.get("ChronicLoad")) > 0
+                else "만성 부하를 넣으면 부하 비율이 자동으로 계산됩니다"))
 
     # ── 2-4 가민 측정 기록 ────────────────────────────────────────────────────────
     with a3:
