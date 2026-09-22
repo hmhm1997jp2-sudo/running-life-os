@@ -31,20 +31,24 @@ import analytics as ana
 # 파일 버전 불일치 가드 — app.py가 실제로 쓰는 이름을 전부 확인합니다.
 # (목록 갱신: python tools/refresh_required.py 또는 app.py의 ana./db./ui. 사용처를 재수집)
 _REQUIRED = {
-    "analytics.py": (ana, ["BELOW_Z1", "LAP_ROLES", "PRIMARY_BENEFIT", "PR_CATEGORIES",
-                           "STATUS_GROUP", "TRAINING_STATUS", "TRAINING_STATUS_KR",
-                           "WATCH_MODEL", "ZONE_MODELS", "age_from_birth", "assign_zones",
-                           "bpm_to_pct", "build_alerts", "classify_laps", "daily_load_series",
-                           "decoupling", "decoupling_verdict", "detect_prs",
-                           "effective_load_ratio", "effective_vo2max", "efficiency_factor",
-                           "endurance_meta", "fix_race_pred", "garmin_alerts",
-                           "garmin_race_predictions", "garmin_vs_computed", "has_watch_zones",
-                           "hill_meta", "intensity_distribution", "interval_shape",
-                           "lap_role_summary", "latest_garmin", "load_focus",
-                           "load_ratio_meta", "load_summary", "pace_str", "parse_time_str",
-                           "parse_zone_pcts", "predict_time", "preferred_zone_model",
-                           "prepare_workouts", "profile_changes", "profile_history",
-                           "race_plan", "readiness_factors", "readiness_meta",
+    "analytics.py": (ana, ["BELOW_Z1", "FORM_METRICS", "LAP_ROLES", "LAP_SUMMARY_FMT",
+                           "PRIMARY_BENEFIT", "PR_CATEGORIES",
+                           "RACE_PRED_COLS", "STATUS_GROUP", "TRAINING_STATUS",
+                           "TRAINING_STATUS_KR", "WATCH_MODEL", "ZONE_MODELS",
+                           "age_from_birth", "assign_zones", "bpm_to_pct", "build_alerts",
+                           "classify_laps", "daily_load_series", "decoupling",
+                           "decoupling_verdict", "detect_prs", "effective_load_ratio",
+                           "effective_vo2max", "efficiency_factor", "endurance_meta",
+                           "fix_race_pred", "form_summary", "form_trend",
+                           "garmin_alerts", "garmin_race_predictions",
+                           "garmin_vs_computed", "has_watch_zones", "hill_meta",
+                           "intensity_distribution", "interval_shape", "lap_role_summary",
+                           "lap_wmean",
+                           "latest_garmin", "load_focus", "load_ratio_meta", "load_summary",
+                           "pace_str", "parse_time_str", "parse_zone_pcts", "predict_time",
+                           "preferred_zone_model", "prepare_workouts", "profile_changes",
+                           "profile_history", "race_plan", "race_pred_summary",
+                           "race_pred_trend", "readiness_factors", "readiness_meta",
                            "recovery_meta", "recovery_remaining", "resolve_lthr",
                            "set_watch_zones", "shoe_mileage", "stage_to_role", "status_meta",
                            "time_str", "training_paces", "vdot_from_performance",
@@ -699,20 +703,33 @@ def panel_title(label: str):
                            color=C["muted"], anchor="start", offset=2)
 
 
+def _tick_step(fmt: str):
+    """'.1f' → 0.1. 눈금 간격을 표시 자릿수보다 잘게 두면 8.25가 8.3으로 반올림돼
+    '8.3, 8.3'처럼 같은 눈금이 두 번 찍힙니다."""
+    m = re.match(r"^[,]?\.(\d+)f$", str(fmt or ""))
+    return 10 ** -int(m.group(1)) if m else None
+
+
 def dual_small_multiples(df, datecol, pairs, span, h_pc=96, h_mb=80):
-    """단위가 다른 두 지표를 '위아래 작은 그래프' 두 칸으로. 날짜 축은 공유합니다.
+    """단위가 다른 여러 지표를 '위아래 작은 그래프'로. 날짜 축은 맨 아래만 씁니다.
     pairs = [(컬럼, 표시이름, 색, 숫자형식), ...]"""
     xax = date_axis(span)
+    usable = [(c, lab, col, fmt) for c, lab, col, fmt in pairs
+              if c in df.columns and not df[[datecol, c]].dropna().empty]
     charts = []
-    for i, (col, label, color, fmt) in enumerate(pairs):
+    for i, (col, label, color, fmt) in enumerate(usable):
         sub = df[[datecol, col]].dropna()
-        if sub.empty:
-            continue
+        step = _tick_step(fmt)
         charts.append(alt.Chart(sub).mark_line(color=color, point=True).encode(
+            # 축은 '마지막으로 실제로 그려지는' 칸에만 — 빈 칸을 건너뛰고 세야
+            # 날짜 눈금이 통째로 사라지는 일이 없습니다.
             x=alt.X(f"{datecol}:T", title=None,
-                    axis=xax if i == len(pairs) - 1 else X_HIDDEN),
-            y=alt.Y(f"{col}:Q", title=None, scale=alt.Scale(zero=False),
-                    axis=alt.Axis(format=fmt, tickCount=3)),
+                    scale=alt.Scale(padding=14),
+                    axis=xax if i == len(usable) - 1 else X_HIDDEN),
+            y=alt.Y(f"{col}:Q", title=None,
+                    scale=alt.Scale(zero=False, padding=8),
+                    axis=alt.Axis(format=fmt, tickCount=3,
+                                  **({"tickMinStep": step} if step else {}))),
             tooltip=[alt.Tooltip(f"{datecol}:T", title="날짜", format="%Y-%m-%d"),
                      alt.Tooltip(f"{col}:Q", title=label, format=fmt)]
         ).properties(height=ui.chart_height(h_pc, h_mb),
@@ -1013,6 +1030,8 @@ if ui.is_mobile():
     # 탭에도 '⚙️ 설정'이 있어서 이름이 겹치면 헷갈립니다 — 여긴 화면/잠금 전용
     with st.popover("⚙️ 화면", width="stretch"):
         ui.mode_switch()
+        st.caption("**밝게 / 어둡게는 기기 설정을 따라갑니다.** 폰의 다크 모드를 "
+                   "켜면 이 앱도 어두워집니다.")
         if st.button("🔒 잠금", width="stretch"):
             logout()
 else:
@@ -1024,6 +1043,9 @@ else:
     # 팝오버 안으로 넣었습니다.
     with h2.popover("⚙️ 화면"):
         ui.mode_switch()
+        st.caption("**밝게 / 어둡게는 기기 설정을 그대로 따라갑니다.** 폰·PC의 "
+                   "다크 모드를 켜면 이 앱도 같이 어두워집니다 (앱 안에 고르는 "
+                   "칸은 없습니다).")
     if h3.button("🔒 잠금", width="stretch"):
         logout()
 
@@ -2680,6 +2702,10 @@ with tab_ana:
                         if fnum(W.get("AvgStrideM")) > 0 else "",
                         f"접지 {fnum(W.get('AvgGCTms')):.0f}ms"
                         if fnum(W.get("AvgGCTms")) > 0 else "",
+                        f"수직진동 {fnum(W.get('AvgVertOscCm')):.1f}cm"
+                        if fnum(W.get("AvgVertOscCm")) > 0 else "",
+                        f"수직비율 {fnum(W.get('AvgVertRatioPct')):.1f}%"
+                        if fnum(W.get("AvgVertRatioPct")) > 0 else "",
                         f"상승 {fnum(W.get('ElevationGainM')):.0f}m"
                         if fnum(W.get("ElevationGainM")) > 0 else "",
                         f"{fnum(W.get('Temperature')):.1f}°C"
@@ -2718,12 +2744,19 @@ with tab_ana:
                             st.markdown(DECOUPLING_HELP)
 
                         rs = ana.lap_role_summary(CL)
-                        if not rs.empty and len(rs) > 1:
-                            st.markdown("<p class='rl-sub' style='margin:10px 0 2px'>"
-                                        "<b>역할별 요약</b> — 인터벌·템포런은 이 표의 "
-                                        "‘반복’ 행이 실제 훈련 강도입니다</p>",
-                                        unsafe_allow_html=True)
-                            st.dataframe(rs, width="stretch", hide_index=True)
+                        if not rs.empty:
+                            st.markdown(
+                                "<p class='rl-sub' style='margin:10px 0 2px'>"
+                                "<b>구간 평균</b> — 시간으로 가중한 평균입니다. "
+                                "인터벌·템포런은 ‘반복’ 줄이 실제 훈련 강도이고, "
+                                "‘전체’ 줄이 이 훈련의 평균입니다</p>",
+                                unsafe_allow_html=True)
+                            st.dataframe(
+                                rs, width="stretch", hide_index=True,
+                                column_config={
+                                    k: st.column_config.NumberColumn(k, format=v)
+                                    for k, v in ana.LAP_SUMMARY_FMT.items()
+                                    if k in rs.columns})
 
                         CL = CL.sort_values("LapNo")
                         show_l = pd.DataFrame({
@@ -2737,10 +2770,20 @@ with tab_ana:
                             "케이던스": CL["AvgCadence"].map(lambda v: vtxt(v, "{:.0f}")),
                             "보폭(m)": CL["AvgStrideM"].map(lambda v: vtxt(v, "{:.2f}")),
                         })
+                        # 러닝 폼 3종 — 값이 있을 때만 열을 붙입니다 (없으면 —만 늘어남)
+                        for _lab, _c, _f in (("접지(ms)", "AvgGCTms", "{:.0f}"),
+                                             ("수직진동(cm)", "AvgVertOscCm", "{:.1f}"),
+                                             ("수직비율(%)", "AvgVertRatioPct", "{:.1f}")):
+                            if (_c in CL.columns and pd.to_numeric(
+                                    CL[_c], errors="coerce").fillna(0).abs().sum() > 0):
+                                show_l[_lab] = CL[_c].map(lambda v, _ff=_f: vtxt(v, _ff))
                         if ui.is_mobile():
                             ui.item_list([
                                 (f"랩 {int(r['랩'])} · {r['역할']} · {r['페이스']}",
-                                 f"{r['거리(km)']}km · {r['시간']} · {r['평균심박']}bpm")
+                                 " · ".join([f"{r['거리(km)']}km", r["시간"],
+                                             f"{r['평균심박']}bpm"]
+                                            + ([f"수직비율 {r['수직비율(%)']}%"]
+                                               if "수직비율(%)" in show_l.columns else [])))
                                 for _, r in show_l.iterrows()])
                         else:
                             st.dataframe(show_l, width="stretch", hide_index=True)
@@ -2750,9 +2793,6 @@ with tab_ana:
                             ("GAP(경사보정)", "GapPaceSec", "pace"),
                             ("최대 페이스", "MaxPaceSec", "pace"),
                             ("최고 케이던스", "MaxCadence", "{:.0f}"),
-                            ("접지(ms)", "AvgGCTms", "{:.0f}"),
-                            ("수직진동(cm)", "AvgVertOscCm", "{:.1f}"),
-                            ("수직비율(%)", "AvgVertRatioPct", "{:.1f}"),
                             ("파워(W)", "AvgPower", "{:.0f}"),
                             ("NP(W)", "NormPower", "{:.0f}"),
                             ("W/kg", "AvgWkg", "{:.2f}"),
@@ -2779,10 +2819,20 @@ with tab_ana:
                                             lambda v: ana.time_str(fnum(v) * 60) if fnum(v) > 0 else "—")
                                     else:
                                         _wide[lab] = CL[cc].map(lambda v, _f=f: vtxt(v, _f))
-                                st.dataframe(pd.DataFrame(_wide), width="stretch",
-                                             hide_index=True)
+                                _wdf = pd.DataFrame(_wide).astype(str)
+                                # 맨 아래 평균 줄 — 시간으로 가중한 평균입니다
+                                _avg = {"랩": "평균"}
+                                for lab, cc, f in _have:
+                                    m = ana.lap_wmean(CL, cc)
+                                    _avg[lab] = ("—" if not np.isfinite(m) else
+                                                 ana.pace_str(m) if f == "pace" else
+                                                 ana.time_str(m * 60) if f == "dur" else
+                                                 f.format(m))
+                                _wdf.loc[len(_wdf)] = [_avg.get(c, "—") for c in _wdf.columns]
+                                st.dataframe(_wdf, width="stretch", hide_index=True)
                                 st.caption("가민 활동 상세 CSV에 들어 있는 랩 항목을 그대로 "
-                                           "저장합니다. 값이 하나도 없는 항목은 표시하지 않습니다.")
+                                           "저장합니다. 값이 하나도 없는 항목은 표시하지 않습니다. "
+                                           "맨 아랫줄은 시간으로 가중한 평균입니다.")
 
                         lp = CL[(CL["PaceSec"] > 0) & (CL["역할"] != "자투리")].copy()
                         if len(lp) > 1:
@@ -2790,30 +2840,62 @@ with tab_ana:
                             mm_ss = ("floor(datum.value/60) + ':' + "
                                      "(datum.value%60 < 10 ? '0' : '') + "
                                      "format(round(datum.value%60), 'd')")
-                            bars = alt.Chart(lp).mark_bar().encode(
-                                x=alt.X("LapNo:O", title="랩",
-                                        axis=alt.Axis(labelAngle=0)),
-                                y=alt.Y("PaceSec:Q", title="페이스 (짧을수록 빠름)",
-                                        scale=alt.Scale(zero=False, nice=True),
-                                        axis=alt.Axis(labelExpr=mm_ss)),
-                                color=alt.Color("역할:N", title=None, scale=alt.Scale(
-                                    domain=ana.LAP_ROLES,
-                                    range=[C["slate"], C["accent"], C["teal"],
-                                           C["violet"], C["primary"], C["pale"]])),
+                            # 막대는 언제나 0부터 그려집니다. 페이스는 0:00이 기준이
+                            # 아니어서, 막대로 그리면 5:00과 6:00이 거의 같아 보입니다
+                            # → 점과 선으로 바꾸고 축을 뒤집어 '위쪽 = 빠름'으로.
+                            _roles = [r for r in ana.LAP_ROLES
+                                      if (lp["역할"] == r).any()]
+                            _rmap = dict(zip(ana.LAP_ROLES,
+                                             [C["slate"], C["accent"], C["teal"],
+                                              C["violet"], C["primary"], C["pale"]]))
+                            # 역할이 하나뿐이면(예: 지속주) 범례는 정보가 없습니다
+                            _col = (alt.value(_rmap.get(_roles[0], C["primary"]))
+                                    if len(_roles) <= 1 else
+                                    alt.Color("역할:N", title=None,
+                                              scale=alt.Scale(
+                                                  domain=_roles,
+                                                  range=[_rmap[r] for r in _roles]),
+                                              legend=alt.Legend(orient="top",
+                                                                direction="horizontal",
+                                                                symbolType="circle",
+                                                                symbolSize=90)))
+                            _ysc = alt.Scale(zero=False, nice=True,
+                                             reverse=True, padding=12)
+                            # 세로로 눕힌 축 제목은 좁은 칸에서 글자가 세로로
+                            # 쪼개져 읽히지 않습니다 → 차트 위 가로 한 줄로.
+                            _y = alt.Y("PaceSec:Q", title=None,
+                                       scale=_ysc,
+                                       axis=alt.Axis(labelExpr=mm_ss, tickCount=5))
+                            _x = alt.X("LapNo:O", title="랩",
+                                       axis=alt.Axis(labelAngle=0),
+                                       scale=alt.Scale(padding=10))
+                            base = alt.Chart(lp)
+                            line = base.mark_line(color=C["pale"], strokeWidth=1.5,
+                                                  opacity=.8).encode(x=_x, y=_y)
+                            pts = base.mark_point(size=110, filled=True,
+                                                  opacity=.95).encode(
+                                x=_x, y=_y, color=_col,
                                 tooltip=[alt.Tooltip("LapNo", title="랩"),
                                          alt.Tooltip("역할"),
                                          alt.Tooltip("페이스"),
-                                         alt.Tooltip("DistanceKm", title="거리(km)"),
-                                         alt.Tooltip("AvgHeartRate", title="평균심박")])
-                            avg = alt.Chart(lp).mark_rule(
-                                strokeDash=[5, 4], color=C["slate"]).encode(
-                                y=alt.Y("mean(PaceSec):Q"),
-                                tooltip=[alt.Tooltip("mean(PaceSec):Q", title="평균 페이스(초/km)",
+                                         alt.Tooltip("DistanceKm", title="거리(km)",
+                                                     format=".2f"),
+                                         alt.Tooltip("AvgHeartRate", title="평균심박",
+                                                     format=",d")])
+                            avg = base.mark_rule(strokeDash=[5, 4],
+                                                 color=C["slate"]).encode(
+                                y=alt.Y("mean(PaceSec):Q", scale=_ysc),
+                                tooltip=[alt.Tooltip("mean(PaceSec):Q",
+                                                     title="평균 페이스(초/km)",
                                                      format=".0f")])
-                            st.altair_chart((bars + avg).properties(
-                                height=ui.chart_height(230, 200)), width="stretch")
+                            st.altair_chart((line + avg + pts).properties(
+                                height=ui.chart_height(240, 210),
+                                title=panel_title("랩별 페이스 (위로 갈수록 빠름)")),
+                                width="stretch")
                             st.caption("점선 = 이 훈련의 평균 페이스 · "
-                                       "막대가 낮을수록 빠른 구간입니다.")
+                                       "점이 위에 있을수록 빠른 구간입니다."
+                                       + ("" if len(_roles) > 1 else
+                                          f" (이 훈련은 전 구간이 ‘{_roles[0]}’입니다)"))
 
         if not view.empty:
             with ui.card("edit"):
@@ -2913,7 +2995,11 @@ with tab_ana:
                                             scale=alt.Scale(domain=_gdom,
                                                             range=[C["primary"], C["amber"],
                                                                    C["red"]]),
-                                            legend=alt.Legend(orient="top")),
+                                            # 범례 표식을 점 모양으로 — 차트의 마크와
+                                            # 같은 모양이어야 바로 연결됩니다
+                                            legend=alt.Legend(orient="top",
+                                                              symbolType="circle",
+                                                              symbolSize=90)),
                             tooltip=[alt.Tooltip("StatusDate:T", title="날짜", format="%Y-%m-%d"),
                                      alt.Tooltip("상태:N", title="상태"),
                                      alt.Tooltip("구분:N", title="구분")]
@@ -3011,6 +3097,56 @@ with tab_ana:
                         ).properties(height=ui.chart_height(260, 220)), width="stretch")
                     else:
                         st.caption("Load Focus 입력 기록이 없습니다.")
+
+                # ── 레이스 예측 추이 ──────────────────────────────────
+                _pt = ana.race_pred_trend(gmv)
+                if not _pt.empty:
+                    with ui.card("gpredtr"):
+                        ui.head("🏁 레이스 예측 추이",
+                                "완주 시간은 종목마다 크기가 너무 달라 한 축에 못 "
+                                "올립니다 → <b>km당 페이스</b>로 바꿔 함께 그립니다 · "
+                                "<b>위로 갈수록 빠름</b>")
+                        _pord = [n for _, n, _ in ana.RACE_PRED_COLS]
+                        _ptip = [alt.Tooltip("MetricDate:T", title="측정일",
+                                             format="%Y-%m-%d"),
+                                 alt.Tooltip("종목:N"),
+                                 alt.Tooltip("표시:N", title="예상 기록"),
+                                 alt.Tooltip("페이스:N", title="페이스")]
+                        _pt2 = _pt.copy()
+                        _pt2["표시"] = _pt2["Seconds"].map(ana.time_str)
+                        _pt2["페이스"] = _pt2["PaceSec"].map(ana.pace_str)
+                        _pbase = alt.Chart(_pt2).encode(
+                            x=alt.X("MetricDate:T", title=None,
+                                    scale=alt.Scale(padding=16),
+                                    axis=date_axis(_span_days(_pt2["MetricDate"]))),
+                            # 빠른 쪽이 위로 오도록 뒤집고, 눈금은 분:초로
+                            y=alt.Y("PaceSec:Q", title=None,
+                                    scale=alt.Scale(zero=False, reverse=True,
+                                                    padding=14),
+                                    axis=alt.Axis(
+                                        tickCount=6,
+                                        labelExpr=(
+                                            "format(floor(datum.value / 60), 'd') + ':' + "
+                                            "(datum.value % 60 < 10 ? '0' : '') + "
+                                            "format(round(datum.value % 60), 'd')"))),
+                            color=alt.Color("종목:N", title=None, sort=_pord,
+                                            scale=alt.Scale(domain=_pord,
+                                                            range=CHART_PALETTE[:4]),
+                                            legend=alt.Legend(orient="top",
+                                                              symbolType="circle",
+                                                              symbolSize=90)),
+                            tooltip=_ptip)
+                        st.altair_chart(
+                            (_pbase.mark_line(strokeWidth=2)
+                             + _pbase.mark_point(size=70, filled=True))
+                            .properties(height=ui.chart_height(300, 250),
+                                        title=panel_title("페이스 (분:초/km) · 위 = 빠름")),
+                            width="stretch")
+                        _ps = ana.race_pred_summary(_pt)
+                        if not _ps.empty:
+                            st.dataframe(_ps, width="stretch", hide_index=True)
+                            st.caption("‘변화’는 이 기간 **처음 값 → 마지막 값**입니다. "
+                                       "**−** 가 빨라진 것입니다. 기간은 위에서 바꿉니다.")
 
                 with ui.card("gscore"):
                     ui.head("🏅 가민 기량 점수 추이", "각 지표는 단위가 달라 따로 그립니다")
@@ -3362,6 +3498,57 @@ with tab_ana:
                             "**내 선의 방향**만 보세요. 주황 선은 4회 이동평균입니다.\n"
                             "- 더위·언덕·수면 부족에도 떨어지니, 한두 점이 아니라 "
                             "**몇 주 흐름**으로 판단하세요.")
+
+            with ui.card("form"):
+                ui.head("🦶 러닝 폼 추이",
+                        "가민이 재 주는 러닝 다이나믹스 — 훈련끼리 비교할 수 있게 "
+                        "한 줄로 세웠습니다")
+                ft = ana.form_trend(df_w)
+                if ft.empty:
+                    st.caption("러닝 다이나믹스가 담긴 활동 상세 CSV를 "
+                               "‘📥 CSV 가져오기’로 넣으면 여기에 추세가 그려집니다. "
+                               "(HRM-Pro·Running Dynamics Pod 같은 장비가 있어야 "
+                               "가민이 기록합니다)")
+                else:
+                    fs = ana.form_summary(ft)
+                    if not fs.empty:
+                        st.dataframe(fs, width="stretch", hide_index=True)
+                        st.caption("‘최근 평균’은 마지막 5회(있는 만큼), "
+                                   "‘이전 평균’은 그보다 앞선 전부입니다 · "
+                                   "👍 = 좋아지는 방향 · 👀 = 반대 방향 · "
+                                   "보폭은 페이스에 따라 당연히 변해서 "
+                                   "좋고 나쁨을 따지지 않습니다.")
+                    _fcolor = {"AvgVertRatioPct": C["primary"], "AvgGCTms": C["teal"],
+                               "AvgVertOscCm": C["violet"], "AvgCadence": C["accent"],
+                               "AvgStrideM": C["slate"]}
+                    _pairs = [(c, f"{n} ({u})", _fcolor[c], f)
+                              for c, n, u, f, _g in ana.FORM_METRICS if c in ft.columns]
+                    _ch = dual_small_multiples(ft, "WorkoutDate", _pairs,
+                                               _span_days(ft["WorkoutDate"]),
+                                               h_pc=104, h_mb=88)
+                    if _ch:
+                        stacked_charts(_ch)
+                with st.expander("❓ 어떤 값을 봐야 하나요"):
+                    st.markdown(
+                        "**한 개만 본다면 수직 비율(Vertical Ratio)** 입니다. "
+                        "수직 진동 ÷ 보폭으로, **앞으로 나아간 거리 대비 위아래로 "
+                        "얼마나 튀었는지**를 나타냅니다. 위로 튄 만큼은 전진에 쓰이지 "
+                        "않으니 **낮을수록 경제적**입니다. 수직 진동이나 보폭 하나만 "
+                        "보면 키·페이스에 따라 달라져 비교가 어렵지만, 비율은 그 둘을 "
+                        "함께 반영해서 훈련끼리 견줘 보기 좋습니다.\n\n"
+                        "- **수직 비율 (%)** — 낮을수록 좋음. 가민 기준 6% 아래면 매우 좋음, "
+                        "8% 부근이 보통입니다.\n"
+                        "- **접지 시간 (ms)** — 발이 땅에 닿아 있는 시간. 짧을수록 "
+                        "탄력적입니다. 다만 느리게 달리면 당연히 길어집니다.\n"
+                        "- **수직 진동 (cm)** — 위아래로 튄 폭. 단독으로 보기보다 "
+                        "수직 비율로 보세요.\n"
+                        "- **케이던스 (spm)** — 분당 걸음 수. 보통 높을수록 충격이 "
+                        "분산되지만, 무리해서 올릴 값은 아닙니다.\n"
+                        "- **보폭 (m)** — 빨리 달리면 늘어납니다. 좋고 나쁨이 아니라 "
+                        "**같은 페이스에서** 어떻게 변했는지를 보세요.\n\n"
+                        "세 값 모두 **페이스가 빨라지면 저절로 좋아집니다.** "
+                        "그러니 한 번의 값보다 **같은 종류의 훈련끼리, 몇 주 흐름**으로 "
+                        "비교하는 편이 정확합니다.")
 
             with ui.card("scatter"):
                 ui.head("🫀 페이스 대비 심박",
