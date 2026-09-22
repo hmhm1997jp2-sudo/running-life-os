@@ -696,6 +696,83 @@ def efficiency_factor(df_work: pd.DataFrame, days: int = 180) -> pd.DataFrame:
     return e[["WorkoutDate", "EF", "EF_MA4"]]
 
 
+# ── 러닝 폼(러닝 다이나믹스) 지표 ────────────────────────────────────────────
+# (컬럼, 이름, 단위, 숫자형식, 좋은 방향) — 좋은 방향: -1 낮을수록 / +1 높을수록
+#  / 0 좋고 나쁨을 말할 수 없음(페이스에 따라 당연히 달라지는 값)
+FORM_METRICS = [
+    ("AvgVertRatioPct", "수직 비율", "%",   ".1f", -1),
+    ("AvgGCTms",        "접지 시간", "ms",  ".0f", -1),
+    ("AvgVertOscCm",    "수직 진동", "cm",  ".1f", -1),
+    ("AvgCadence",      "케이던스",  "spm", ".0f", +1),
+    ("AvgStrideM",      "보폭",      "m",   ".2f",  0),
+]
+
+FORM_META = {c: (name, unit, fmt, good) for c, name, unit, fmt, good in FORM_METRICS}
+
+# 러닝 다이나믹스 3종 — 가슴 스트랩·러닝 다이나믹스 팟이 있어야 기록됩니다
+DYNAMICS_COLS = ("AvgVertRatioPct", "AvgGCTms", "AvgVertOscCm")
+
+
+def form_trend(df_work: pd.DataFrame, days: int = 365,
+               limit: int = 40) -> pd.DataFrame:
+    """훈련별 러닝 폼 지표. 값이 하나라도 있는 훈련만, 있는 열만 돌려줍니다.
+
+    다이나믹스 3종이 기록된 훈련이 하나라도 있으면 **그 훈련만** 남깁니다.
+    케이던스는 시계만으로도 매번 기록돼서, 섞어 두면 점 몇 개짜리 다이나믹스
+    그래프 옆에 수백 점짜리 케이던스 그래프가 붙어 비교가 안 됩니다.
+    같은 폼 지표라도 페이스가 다르면 값이 달라지므로 PaceSec도 같이 담습니다."""
+    d = prepare_workouts(df_work)
+    if d.empty:
+        return pd.DataFrame()
+    cutoff = pd.Timestamp(datetime.now()).normalize() - timedelta(days=days)
+    d = d[d["WorkoutDate"] >= cutoff].copy()
+    have = []
+    for col, *_ in FORM_METRICS:
+        if col not in d.columns:
+            continue
+        v = pd.to_numeric(d[col], errors="coerce")
+        if (v > 0).sum() >= 1:
+            d[col] = v.where(v > 0)
+            have.append(col)
+    if not have:
+        return pd.DataFrame()
+    dyn = [c for c in DYNAMICS_COLS if c in have]
+    mask = d[dyn].notna().any(axis=1) if dyn else d[have].notna().any(axis=1)
+    keep = ["WorkoutDate", "WorkoutType", "DistanceKm", "PaceSec"] + have
+    out = d.loc[mask, [c for c in keep if c in d.columns]].copy()
+    return out.sort_values("WorkoutDate").tail(max(int(limit), 2))
+
+
+def form_summary(ft: pd.DataFrame, recent: int = 5) -> pd.DataFrame:
+    """최근 n회 평균과 그 이전 평균을 비교한 한 장짜리 표."""
+    if ft is None or ft.empty:
+        return pd.DataFrame()
+    rows = []
+    for col, name, unit, fmt, good in FORM_METRICS:
+        if col not in ft.columns:
+            continue
+        s = pd.to_numeric(ft[col], errors="coerce").dropna()
+        if s.empty:
+            continue
+        cur = s.tail(recent)
+        prev = s.iloc[:-len(cur)] if len(s) > len(cur) else pd.Series(dtype=float)
+        d = (float(cur.mean()) - float(prev.mean())) if len(prev) else np.nan
+        # 지표마다 기록 수가 다릅니다(케이던스는 매번, 러닝 다이나믹스는 가끔).
+        # 열 이름에 횟수를 넣으면 지표마다 열이 따로 생기므로 '표본' 열로 뺍니다.
+        rows.append({
+            "지표": f"{name} ({unit})",
+            "최근 값": format(float(s.iloc[-1]), fmt),
+            "최근 평균": format(float(cur.mean()), fmt),
+            "이전 평균": format(float(prev.mean()), fmt) if len(prev) else "—",
+            "변화": ("—" if not np.isfinite(d) else
+                    ("→ 변화 없음" if abs(d) < 10 ** -int(fmt[1]) / 2 else
+                     f"{d:+{fmt}}" + ("" if good == 0 else
+                                          (" 👍" if d * good > 0 else " 👀")))),
+            "표본": f"{len(s)}회",
+        })
+    return pd.DataFrame(rows)
+
+
 # ---------------------------------------------------------------------------
 # 4. 날씨 보정 페이스
 # ---------------------------------------------------------------------------
@@ -1433,6 +1510,62 @@ def garmin_race_predictions(g: dict) -> list[tuple[str, str]]:
              ("Half Marathon", "PredHalf"), ("Full Marathon", "PredFull")]]
 
 
+RACE_PRED_COLS = [("Pred5K", "5K", 5.0), ("Pred10K", "10K", 10.0),
+                  ("PredHalf", "하프", 21.0975), ("PredFull", "풀", 42.195)]
+
+
+def race_pred_trend(df_metrics: pd.DataFrame) -> pd.DataFrame:
+    """가민 레이스 예측의 시간 흐름.
+
+    종목마다 완주 시간의 크기가 완전히 달라(22분 vs 4시간) 한 축에 같이 그릴 수
+    없습니다. 그래서 가민처럼 **km당 페이스**로 바꿔 한 축에 올립니다.
+    반환 컬럼: MetricDate · 종목 · 거리km · Seconds(완주초) · PaceSec(초/km)
+    """
+    cols = ["MetricDate"] + [c for c, _, _ in RACE_PRED_COLS]
+    if df_metrics is None or df_metrics.empty:
+        return pd.DataFrame(columns=["MetricDate", "종목", "거리km", "Seconds", "PaceSec"])
+    d = df_metrics.reindex(columns=cols).copy()
+    d["MetricDate"] = pd.to_datetime(d["MetricDate"], errors="coerce")
+    d = d.dropna(subset=["MetricDate"]).sort_values("MetricDate")
+    rows = []
+    for _, r in d.iterrows():
+        for col, name, km in RACE_PRED_COLS:
+            sec = parse_time_str(fix_race_pred(r.get(col), col))
+            if not np.isfinite(sec) or sec <= 0:
+                continue
+            rows.append({"MetricDate": r["MetricDate"], "종목": name, "거리km": km,
+                         "Seconds": sec, "PaceSec": sec / km})
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return pd.DataFrame(columns=["MetricDate", "종목", "거리km", "Seconds", "PaceSec"])
+    # 같은 날 여러 번 넣었으면 마지막 것만
+    return (out.sort_values("MetricDate")
+               .drop_duplicates(subset=["MetricDate", "종목"], keep="last")
+               .reset_index(drop=True))
+
+
+def race_pred_summary(trend: pd.DataFrame) -> pd.DataFrame:
+    """종목별 '처음 → 마지막' 변화 표. 기간 안에서 얼마나 좋아졌는지."""
+    if trend is None or trend.empty:
+        return pd.DataFrame()
+    rows = []
+    for _, name, _km in RACE_PRED_COLS:
+        t = trend[trend["종목"] == name]
+        if t.empty:
+            continue
+        first, last = t.iloc[0], t.iloc[-1]
+        diff = last["Seconds"] - first["Seconds"]
+        rows.append({
+            "종목": name,
+            "기간 시작": time_str(first["Seconds"]),
+            "최근": time_str(last["Seconds"]),
+            "변화": ("—" if len(t) < 2 else
+                     f"{'-' if diff < 0 else '+'}{time_str(abs(diff))}"),
+            "최근 페이스": pace_str(last["PaceSec"]),
+        })
+    return pd.DataFrame(rows)
+
+
 def garmin_vs_computed(g: dict, summary: dict, evo2: dict, vdot: float) -> list[dict]:
     """가민이 준 값과 이 앱이 기록으로 계산한 값을 나란히 비교.
     둘이 크게 어긋나면 입력 오류이거나 훈련 성격이 한쪽에 치우쳤다는 신호입니다."""
@@ -1688,28 +1821,71 @@ def classify_laps(lap_rows: pd.DataFrame, fast_ratio: float = 1.06) -> pd.DataFr
     return d
 
 
+# 랩 요약표에 함께 보여줄 평균 지표 — (컬럼, 표시이름, 소수 자릿수)
+# 있는 항목만 열이 생깁니다. 값이 하나도 없으면 열 자체를 만들지 않습니다.
+_LAP_AVG_COLS = [
+    ("AvgHeartRate",   "평균 심박",     0),
+    ("MaxHeartRate",   "최대 심박",     0),
+    ("AvgCadence",     "케이던스",      0),
+    ("AvgStrideM",     "보폭(m)",       2),
+    ("AvgGCTms",       "접지(ms)",      0),
+    ("AvgVertOscCm",   "수직진동(cm)",  1),
+    ("AvgVertRatioPct", "수직비율(%)",  1),
+    ("AvgPower",       "파워(W)",       0),
+]
+
+
+def _wmean(sub: pd.DataFrame, col: str, wcol: str = "DurationMinutes") -> float:
+    """시간으로 가중한 평균. 랩 길이가 제각각이라 단순 평균은 짧은 랩을
+    과대평가합니다. 0 이나 빈 값은 '측정 안 됨'으로 보고 빼고 셉니다."""
+    if col not in sub.columns:
+        return np.nan
+    v = pd.to_numeric(sub[col], errors="coerce")
+    w = pd.to_numeric(sub.get(wcol), errors="coerce")
+    m = v.notna() & (v > 0) & w.notna() & (w > 0)
+    if not m.any():
+        return np.nan
+    return float((v[m] * w[m]).sum() / w[m].sum())
+
+
+lap_wmean = _wmean          # 화면 쪽에서도 같은 평균을 쓰도록 공개 이름 하나
+
+# 요약표 숫자 형식 — st.dataframe 은 1.0 을 '1' 로 줄여 버려서 자릿수를 지정합니다
+LAP_SUMMARY_FMT = {"거리(km)": "%.2f",
+                   **{lab: (f"%.{nd}f" if nd else "%d")
+                      for _c, lab, nd in _LAP_AVG_COLS}}
+
+
+def _role_row(label: str, sub: pd.DataFrame, cols) -> dict:
+    dist = float(pd.to_numeric(sub["DistanceKm"], errors="coerce").sum())
+    mins = float(pd.to_numeric(sub["DurationMinutes"], errors="coerce").sum())
+    row = {
+        "역할": label, "랩": int(len(sub)),
+        "거리(km)": round(dist, 2),
+        "시간": time_str(mins * 60),
+        "평균 페이스": pace_str(mins * 60 / dist) if dist > 0 else "—",
+    }
+    for col, label_, nd in cols:
+        v = _wmean(sub, col)
+        row[label_] = (round(v, nd) if nd else int(round(v))) if np.isfinite(v) else None
+    return row
+
+
 def lap_role_summary(classified: pd.DataFrame) -> pd.DataFrame:
-    """역할별 합계 — 본 구간만의 페이스·심박이 실제로 의미 있는 수치입니다."""
+    """역할별 평균 — 본 구간만의 페이스·심박이 실제로 의미 있는 수치입니다.
+    맨 아래 '전체' 줄은 이 훈련 전체의 평균입니다(역할이 둘 이상일 때만)."""
     if classified is None or classified.empty or "역할" not in classified.columns:
         return pd.DataFrame()
-    rows = []
-    for role in LAP_ROLES:
-        sub = classified[classified["역할"] == role]
-        if sub.empty:
-            continue
-        dist = float(sub["DistanceKm"].sum())
-        mins = float(sub["DurationMinutes"].sum())
-        hr = sub[sub["AvgHeartRate"] > 0]
-        hr_w = (float((hr["AvgHeartRate"] * hr["DurationMinutes"]).sum()
-                      / hr["DurationMinutes"].sum()) if not hr.empty else np.nan)
-        rows.append({
-            "역할": role, "랩": int(len(sub)),
-            "거리(km)": round(dist, 2),
-            "시간": time_str(mins * 60),
-            "평균 페이스": pace_str(mins * 60 / dist) if dist > 0 else "-",
-            "평균 심박": int(round(hr_w)) if np.isfinite(hr_w) else "-",
-        })
-    return pd.DataFrame(rows)
+    cols = [(c, lab, nd) for c, lab, nd in _LAP_AVG_COLS
+            if c in classified.columns
+            and pd.to_numeric(classified[c], errors="coerce").fillna(0).abs().sum() > 0]
+    present = [r for r in LAP_ROLES if (classified["역할"] == r).any()]
+    rows = [_role_row(r, classified[classified["역할"] == r], cols) for r in present]
+    if len(rows) > 1:
+        rows.append(_role_row("전체", classified, cols))
+    out = pd.DataFrame(rows)
+    # 전부 빈 열은 표에서 빼 줍니다 (예: 파워 미측정)
+    return out.dropna(axis=1, how="all")
 
 
 def interval_shape(classified: pd.DataFrame) -> str:
