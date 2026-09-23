@@ -1754,7 +1754,8 @@ with tab_log:
                 w_surf = d_[1 % len(d_)].selectbox("노면", SURFACES)
                 w_rpe = d_[2 % len(d_)].slider("RPE (체감강도)", 1, 10, 5)
 
-                st.markdown("<p class='rl-sub' style='margin:10px 0 2px'>가민 트레이닝 효과 (선택)</p>",
+                st.markdown("<p class='rl-sub' style='margin:10px 0 2px'>"
+                            "가민 트레이닝 효과 · <b>운동 부하</b> (선택)</p>",
                             unsafe_allow_html=True)
                 te = ui.cols(4, 1, keep_row=True)
                 w_ate = te[0].number_input("유산소 TE", 0.0, 5.0, 0.0, 0.1)
@@ -2103,7 +2104,7 @@ with tab_log:
                             rpe_i = d2[2 % len(d2)].slider("RPE (체감강도)", 1, 10, 5, key="imp_rpe")
 
                             st.markdown("<p class='rl-sub' style='margin:12px 0 2px'>"
-                                        "가민 트레이닝 효과 · 컨디션 (선택)</p>",
+                                        "가민 트레이닝 효과 · <b>운동 부하</b> · 컨디션 (선택)</p>",
                                         unsafe_allow_html=True)
                             d3 = ui.cols(4, 1, keep_row=True)
                             ate_i = d3[0].number_input("유산소 TE", 0.0, 5.0, 0.0, 0.1, key="imp_ate")
@@ -3139,6 +3140,14 @@ with tab_ana:
                         "볼 지표 — 고른 순서가 아니라 아래 순서대로 쌓입니다",
                         _av, default=_def,
                         format_func=lambda k: ana.TREND_LABEL[k], key="gtrend_pick")
+                    # 값이 하나도 없는 지표는 목록에 안 나옵니다 → 왜 없는지 알려줍니다
+                    if "dayload" not in _av:
+                        st.info("‘일일 운동 부하’는 아직 목록에 없습니다 — 훈련에 "
+                                "**운동 부하**를 하나라도 넣으면 생깁니다. "
+                                "‘✍️ 기록 → ➕ 훈련 입력’의 *가민 트레이닝 효과 · 운동 부하* "
+                                "줄, 또는 ‘📋 훈련 이력 → ✏️ 수정 / 삭제’의 "
+                                "*가민 트레이닝 효과 · 운동 부하 · 피로도* 접힌 칸에 있습니다. "
+                                "가민 **활동 목록 CSV**를 넣으면 자동으로 들어옵니다.")
                     _pan = ana.trend_panels(gdv, gmv, [k for k in _av if k in _pick],
                                             workouts=_gwv)
                     if not _pan:
