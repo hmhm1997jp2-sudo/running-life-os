@@ -25,6 +25,27 @@ from datetime import datetime, timedelta, date
 # ---------------------------------------------------------------------------
 
 EASY_TYPES = {"Easy", "Recovery", "LSD", "Long Run"}
+
+# 훈련 유형 설명 — 입력할 때와 차트 범례에서 같은 문장을 씁니다.
+# (유형, 한 줄 뜻, 심박존/강도 감각)
+WORKOUT_TYPE_HELP = [
+    ("Recovery", "회복 조깅 — 힘든 훈련 다음 날 아주 천천히. "
+                 "빠르게 뛰면 회복이라는 목적 자체가 없어집니다", "Z1"),
+    ("Easy", "이지런 — 옆 사람과 대화가 되는 속도. "
+             "주간 훈련량의 70~80%를 여기에 씁니다", "Z2"),
+    ("LSD", "Long Slow Distance — 이지런 속도로 길게(보통 90분 이상). "
+            "지구력의 토대를 만드는 장거리", "Z2"),
+    ("Tempo", "템포런 — ‘편하게 힘든’ 속도로 20~40분 쭉. "
+              "마라톤 페이스 언저리입니다", "Z3~Z4"),
+    ("Threshold", "젖산역치 훈련 — 1시간쯤 버틸 수 있는 최대 속도. "
+                  "보통 8~20분씩 끊어서 반복합니다", "Z4"),
+    ("Interval", "인터벌 — 3~5분 빠르게 달리고 회복을 반복. "
+                 "최대산소섭취량(VO2max)을 올리는 훈련", "Z5"),
+    ("Sprint", "스프린트 — 10~30초 전력 질주 + 충분한 휴식. "
+               "근신경과 파워를 건드립니다", "무산소"),
+    ("Race", "대회 — 실제 대회이거나 대회처럼 전력으로 달린 기록", "전력"),
+    ("Cross Training", "크로스 트레이닝 — 자전거·수영·근력 등 달리기 외 운동", "—"),
+]
 QUALITY_TYPES = {"Threshold", "Interval", "Sprint", "Race", "Tempo"}
 
 
@@ -708,6 +729,120 @@ FORM_METRICS = [
 ]
 
 FORM_META = {c: (name, unit, fmt, good) for c, name, unit, fmt, good in FORM_METRICS}
+
+
+# ── '최근 추이 한눈에' — 가민 Connect 처럼 한 날짜 축에 세워 보는 지표들 ──────
+# (키, 표시이름, 출처("daily"|"metric"), 컬럼들, 마크, 숫자형식, 축 고정범위)
+TREND_METRICS = [
+    ("dayload",   "일일 운동 부하",   "workout", ["TrainingLoad"],     "bar",  ",d", None),
+    ("load",      "누적 부하",        "daily",  ["AcuteLoad", "ChronicLoad"],
+     "line",  ",d",  None),
+    ("ratio",     "부하 비율",        "daily",  ["LoadRatio"],        "line", ".2f", None),
+    ("ready",     "트레이닝 준비도",  "daily",  ["TrainingReadiness"], "line", ",d", (0, 100)),
+    ("battery",   "바디 배터리",      "daily",  ["BodyBattery"],      "line", ",d", (0, 100)),
+    ("hrv",       "HRV (ms)",         "daily",  ["HRVms"],            "point", ",d", None),
+    ("rhr",       "안정시 심박 (bpm)", "daily", ["RestingHR"],        "line", ",d", None),
+    ("sleep",     "수면 점수",        "daily",  ["SleepScore"],       "line", ",d", (0, 100)),
+    ("recovery",  "회복 시간 (h)",    "daily",  ["RecoveryTimeHr"],   "bar",  ",d", None),
+    ("intensity", "고강도 분",        "daily",  ["IntensityMinutes"], "bar",  ",d", None),
+    ("vo2",       "VO₂max",           "metric", ["VO2Max"],           "line", ".1f", None),
+    ("fitage",    "피트니스 나이",    "metric", ["FitnessAge"],       "line", ".1f", None),
+    ("endurance", "Endurance Score",  "metric", ["EnduranceScore"],   "line", ",d", None),
+    ("hill",      "Hill Score",       "metric", ["HillScore"],        "line", ",d", None),
+]
+TREND_LABEL = {k: lab for k, lab, *_ in TREND_METRICS}
+TREND_DEFAULT = ["dayload", "load", "ratio", "hrv"]
+
+# 여러 줄이 한 칸에 들어가는 지표의 줄 이름
+TREND_SERIES_KR = {"AcuteLoad": "급성 (최근 7일)", "ChronicLoad": "만성 (최근 28일)"}
+
+_HRV_KR = {"Balanced": "균형 잡힘", "Unbalanced": "불균형",
+           "Low": "낮음", "Poor": "나쁨", "No Status": "상태 없음"}
+HRV_TONE_ORDER = ["균형 잡힘", "불균형", "낮음", "나쁨", "상태 없음"]
+
+
+_TREND_DATE = {"daily": "StatusDate", "metric": "MetricDate", "workout": "WorkoutDate"}
+
+
+def _trend_frame(src, daily, metric, workouts):
+    """출처별 표 + 날짜 컬럼. 훈련은 하루에 여러 건이라 날짜별로 더합니다."""
+    if src == "daily":
+        return daily, "StatusDate"
+    if src == "metric":
+        return metric, "MetricDate"
+    if workouts is None or workouts.empty or "TrainingLoad" not in workouts.columns:
+        return pd.DataFrame(), "WorkoutDate"
+    w = workouts.copy()
+    w["WorkoutDate"] = pd.to_datetime(w["WorkoutDate"], errors="coerce")
+    w["TrainingLoad"] = pd.to_numeric(w["TrainingLoad"], errors="coerce")
+    w = w.dropna(subset=["WorkoutDate"])
+    w = w[w["TrainingLoad"] > 0]
+    if w.empty:
+        return pd.DataFrame(), "WorkoutDate"
+    g = (w.groupby(w["WorkoutDate"].dt.normalize())["TrainingLoad"]
+         .sum().reset_index())
+    return g, "WorkoutDate"
+
+
+def _trend_src(key, daily, metric, workouts):
+    for k, lab, src, cols, mark, fmt, dom in TREND_METRICS:
+        if k != key:
+            continue
+        df, dcol = _trend_frame(src, daily, metric, workouts)
+        return lab, df, dcol, cols, mark, fmt, dom
+    return None
+
+
+def trend_available(daily: pd.DataFrame, metric: pd.DataFrame,
+                    workouts: pd.DataFrame = None) -> list[str]:
+    """실제로 값이 들어 있는 지표 키만 골라 돌려줍니다."""
+    out = []
+    for k, _lab, src, cols, *_ in TREND_METRICS:
+        df, _dcol = _trend_frame(src, daily, metric, workouts)
+        if df is None or df.empty:
+            continue
+        if any(c in df.columns
+               and (pd.to_numeric(df[c], errors="coerce") > 0).sum() > 0 for c in cols):
+            out.append(k)
+    return out
+
+
+def trend_panels(daily: pd.DataFrame, metric: pd.DataFrame, keys,
+                 workouts: pd.DataFrame = None) -> list[dict]:
+    """고른 지표를 한 날짜 축에 세우기 좋은 형태로 정리합니다.
+
+    반환: [{key, label, mark, fmt, domain, multi, data}] —
+    data 는 [날짜, 계열, 값, 상태] 형태의 긴 표입니다."""
+    panels = []
+    for key in keys:
+        got = _trend_src(key, daily, metric, workouts)
+        if not got:
+            continue
+        lab, df, dcol, cols, mark, fmt, dom = got
+        if df is None or df.empty or dcol not in df.columns:
+            continue
+        rows = []
+        for c in cols:
+            if c not in df.columns:
+                continue
+            v = pd.to_numeric(df[c], errors="coerce")
+            sub = pd.DataFrame({"날짜": pd.to_datetime(df[dcol], errors="coerce"),
+                                "계열": TREND_SERIES_KR.get(c, lab),
+                                "값": v.where(v > 0)})
+            if key == "hrv" and "HRVStatus" in df.columns:
+                sub["상태"] = df["HRVStatus"].map(
+                    lambda x: _HRV_KR.get(str(x).strip(), "상태 없음")).values
+            else:
+                sub["상태"] = ""
+            rows.append(sub.dropna(subset=["날짜", "값"]))
+        data = (pd.concat(rows, ignore_index=True).sort_values("날짜")
+                if rows else pd.DataFrame())
+        if data.empty:
+            continue
+        panels.append({"key": key, "label": lab, "mark": mark, "fmt": fmt,
+                       "domain": dom, "multi": data["계열"].nunique() > 1,
+                       "data": data})
+    return panels
 
 # 러닝 다이나믹스 3종 — 가슴 스트랩·러닝 다이나믹스 팟이 있어야 기록됩니다
 DYNAMICS_COLS = ("AvgVertRatioPct", "AvgGCTms", "AvgVertOscCm")
