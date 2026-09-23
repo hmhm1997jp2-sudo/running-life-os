@@ -43,7 +43,10 @@ SCHEMA: dict[str, list[str]] = {
                  "RPE", "LegFatigue", "CardioFatigue", "Notes", "SourceKey",
                  # 아래는 맨 뒤에 추가된 항목 — 순서를 바꾸지 말 것
                  "ElevLossM", "GapPaceSec", "NormPower", "MaxPaceSec", "MaxCadence",
-                 "MovingMinutes"],
+                 "MovingMinutes",
+                 # 맨 뒤에 추가 — 가민이 그 활동에 매긴 '운동 부하(Training Load)'.
+                 # 이걸 모아 날짜별로 더하면 가민의 '운동 부하' 막대 그래프가 됩니다.
+                 "TrainingLoad"],
     # ── 가민 일일 지표 (Connect 홈에서 매일 보이는 값) ──────────────────────
     "DailyStatus": ["StatusID", "StatusDate", "TrainingStatus", "AcuteLoad", "LoadRatio",
                     "RecoveryTimeHr", "TrainingReadiness", "BodyBattery",
@@ -101,7 +104,7 @@ NUMERIC_COLS = {
     "HRRest", "HRMax",
     "FitnessAge", "EnduranceScore", "HillScore",
     "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
-    "AerobicTE", "AnaerobicTE",
+    "AerobicTE", "AnaerobicTE", "TrainingLoad",
     "LapNo", "ElevGainM", "ElevLossM",
     "Calories", "AvgGCTms", "AvgStrideM", "AvgVertOscCm", "AvgVertRatioPct", "TempC",
     "CumMinutes",
