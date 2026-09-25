@@ -7,6 +7,8 @@ Running Life OS — 개인 러닝 관리·분석 시스템
 
 import hashlib
 import math
+import os
+import zoneinfo
 import inspect
 import re
 import uuid
@@ -168,6 +170,32 @@ def viz_colors() -> dict:
         "slate": "#8590a3",
     })
     return ch
+
+
+# ── 시간대 ─────────────────────────────────────────────────────────────────
+# 서버(스트림릿 클라우드)는 UTC로 돕니다. 그대로 두면 한국 시간으로 자정~아침
+# 사이에 **날짜가 하루 어긋나고**, '회복 시간 남은 양'도 9시간씩 틀립니다.
+# secrets.toml 의 APP_TZ 로 바꿀 수 있고, 없으면 서울 기준입니다.
+def app_tz() -> zoneinfo.ZoneInfo:
+    name = None
+    try:
+        name = st.secrets.get("APP_TZ")
+    except Exception:
+        pass
+    name = name or os.environ.get("APP_TZ") or "Asia/Seoul"
+    try:
+        return zoneinfo.ZoneInfo(str(name))
+    except Exception:
+        return zoneinfo.ZoneInfo("Asia/Seoul")
+
+
+def now_local() -> pd.Timestamp:
+    """지금 시각 (내 시간대, tz 정보는 떼고). 앱 안의 모든 '지금'은 이걸 씁니다."""
+    return pd.Timestamp(datetime.now(app_tz()).replace(tzinfo=None))
+
+
+def today_local() -> date:
+    return now_local().date()
 
 
 C = viz_colors()
@@ -407,7 +435,7 @@ def record_editor(sheet: str, id_col: str, label_fn, fields, key: str,
                         # 빈 칸/NaT는 예외를 내지 않고 NaT를 돌려주므로 따로 걸러야
                         # 합니다 (그대로 넘기면 date_input이 터집니다).
                         dv = pd.to_datetime(cur, errors="coerce")
-                        dv = dv.date() if pd.notna(dv) else date.today()
+                        dv = dv.date() if pd.notna(dv) else today_local()
                         vals[col] = c.date_input(label, dv, key=f"{wk}_{col}")
                     elif typ == "select":
                         lst = list(opt or [])
@@ -848,7 +876,7 @@ def range_picker(key: str, default: str = "3개월", label: str = "기간"):
     반환: (시작일, 종료일, 설명문) — 둘 다 None 이면 전체 기간입니다.
     """
     sel = seg(label, list(RANGE_DAYS) + [CUSTOM_RANGE], key + "_sel", default)
-    today = date.today()
+    today = today_local()
     if sel == CUSTOM_RANGE:
         _d0 = st.session_state.get(key + "_rng") or (today - timedelta(days=89), today)
         try:
@@ -1709,7 +1737,7 @@ if SEC == "today" and SCR == "summary":
         d = G.get(key + "_date")
         return f"{d:%m/%d} 입력" if d is not None and pd.notna(d) else "미입력"
 
-    TODAY = pd.Timestamp.now().normalize()
+    TODAY = now_local().normalize()
 
     def gage(key):
         """이 값이 며칠 전 것인지. 값이 없으면 None."""
@@ -1783,7 +1811,7 @@ if SEC == "today" and SCR == "summary":
     _lr_val, _lr_src = ana.effective_load_ratio(G)
     lr_tone, lr_txt = ana.load_ratio_meta(_lr_val)
     # 회복 시간은 계속 줄어드는 값이라, 입력 시각을 기준으로 '지금 남은 시간'을 다시 계산
-    rc_left, rc_raw, rc_until, rc_live = ana.recovery_remaining(G)
+    rc_left, rc_raw, rc_until, rc_live = ana.recovery_remaining(G, now_local())
     rc_tone, rc_txt = ana.recovery_meta(rc_left)
     if rc_live:
         rc_txt = (f"{rc_txt} · {rc_until} 완료 예상" if np.isfinite(rc_left) and rc_left > 0
@@ -2304,7 +2332,7 @@ if SEC == "today" and SCR == "summary":
                 for _, p in act.iterrows():
                     dd = None
                     try:
-                        dd = (pd.to_datetime(p["TargetDate"]).date() - date.today()).days
+                        dd = (pd.to_datetime(p["TargetDate"]).date() - today_local()).days
                     except Exception:
                         pass
                     st.markdown(f"<div class='rl-item'><div class='t'>{p['ProjectName']} "
@@ -2316,7 +2344,7 @@ if SEC == "today" and SCR == "summary":
                         _s = pd.to_datetime(p["StartDate"]).date()
                         _t = pd.to_datetime(p["TargetDate"]).date()
                         _span = max((_t - _s).days, 1)
-                        _pct = min(max((date.today() - _s).days / _span, 0.0), 1.0) * 100
+                        _pct = min(max((today_local() - _s).days / _span, 0.0), 1.0) * 100
                         st.markdown(
                             f"<div class='rl-row'><span class='k'>기간 진행</span>"
                             f"<span class='v'>{_pct:.0f}%</span></div>",
@@ -2348,48 +2376,74 @@ if SEC == "today":
     if SCR == "morning":
         with ui.card("gdaily"):
             ui.head("⌚ 가민 일일 지표", "Garmin Connect에서 보고 그대로 옮겨 적으세요")
-            st.caption("**하루 한 번**만 넣습니다. 가민 ‘트레이닝 준비 상태’ 화면을 "
-                       "그대로 옮겨 적고, 그 화면 왼쪽 위의 **‘…에 업데이트됨’ 시각**을 "
-                       "`기준 시간`에 적으면 됩니다 — 회복 시간을 ‘지금 기준 남은 시간’으로 "
-                       "되돌리는 데 씁니다. "
-                       "훈련마다 붙는 **운동 부하**는 여기가 아니라 "
-                       "‘➕ 훈련 입력 / 📥 CSV 가져오기’에서 넣습니다.")
+            st.caption("가민 ‘트레이닝 준비 상태’ 화면을 그대로 옮겨 적고, 그 화면 "
+                       "왼쪽 위의 **‘…에 업데이트됨’ 시각**을 `기준 시간`에 적으면 "
+                       "됩니다. 훈련마다 붙는 **운동 부하**는 여기가 아니라 "
+                       "‘➕ 훈련 입력 / 📥 파일 가져오기’에서 넣습니다.")
+            # 하루에 두 번 넣게 되는 경우가 있습니다 — 아침에 적어 두고, 오후에
+            # 훈련을 하면 **회복 시간과 단기 부하만** 달라집니다. 그때 폼 전체를
+            # 다시 채우게 하면 아침에 적은 값을 덮어쓸 위험만 커집니다.
+            _when = st.radio(
+                "언제 넣나요", ["🌅 아침 (전체)", "🏃 훈련 뒤 (바뀐 것만)"],
+                horizontal=True, key="am_when", label_visibility="collapsed")
+            _pm = _when.startswith("🏃")
+            if _pm:
+                st.info("훈련을 하면 **회복 시간과 단기 부하**가 달라집니다 — 그것만 "
+                        "다시 넣으세요. 아침에 적은 Readiness·HRV·수면·안정시 심박은 "
+                        "**그대로 남습니다**(줄이 새로 생기지 않고 그 줄만 고쳐집니다). "
+                        "`기준 시간`은 **지금 가민 화면에 떠 있는 시각**으로 두세요.")
             with st.form("f_daily_am", clear_on_submit=True):
                 m0 = ui.cols(2, 1, keep_row=True)
-                dd_ = m0[0].date_input("날짜", date.today(), key="am_date")
+                dd_ = m0[0].date_input("날짜", today_local(), key="am_date")
+                # 훈련 뒤에 넣을 때 7시로 두면 회복 카운트다운이 통째로 어긋납니다
+                _mt_def = (now_local().replace(second=0, microsecond=0).time()
+                           if _pm else dtime(7, 0))
                 mtime = m0[1 % len(m0)].time_input(
-                    "기준 시간", dtime(7, 0), step=300, key="am_time",
+                    "기준 시간", _mt_def, step=300,
+                    key=("am_time_pm" if _pm else "am_time"),
                     help="가민 ‘트레이닝 준비 상태’ 화면 왼쪽 위의 "
                          "‘…에 업데이트됨’ 시각을 그대로 넣으세요. "
                          "회복 시간을 ‘지금 기준 남은 시간’으로 되돌릴 때 씁니다.")
-                m1 = ui.cols(4, 2, keep_row=True)
-                tr = grid_at(m1, 0, 4).number_input(
-                    "Readiness", 0, 100, 0, key="am_tr",
-                    help="트레이닝 준비 상태 점수. 아침에 산출됩니다.")
-                bb = grid_at(m1, 1, 4).number_input(
-                    "Body Battery", 0, 100, 0, key="am_bb",
-                    help="자는 동안 충전됩니다 — 기상 직후가 그날 최고값.")
-                hrvms = grid_at(m1, 2, 4).number_input(
-                    "HRV (ms)", 0, 250, 0, key="am_hrv",
-                    help="밤사이 평균. 하루 동안 고정입니다.")
-                hrv = grid_at(m1, 3, 4).selectbox(
-                    "HRV 상태", ["Balanced", "Unbalanced", "Low", "Poor", "No Status"],
-                    key="am_hrvs")
-                m2 = ui.cols(4, 2, keep_row=True)
-                slp = grid_at(m2, 0, 4).number_input("수면 점수", 0, 100, 0, key="am_slp")
-                rhr = grid_at(m2, 1, 4).number_input("안정시 심박", 0, 120, 0, key="am_rhr")
-                slh = grid_at(m2, 2, 4).selectbox(
-                    "최근 수면 점수", SLEEP_HIST_OPTS, key="am_slh",
-                    help="가민 준비 상태 화면의 ‘최근 수면 점수’(최근 3일) 판정.")
-                sth = grid_at(m2, 3, 4).selectbox(
-                    "최근 스트레스", STRESS_HIST_OPTS, key="am_sth",
-                    help="가민 준비 상태 화면의 ‘최근 스트레스’(최근 3일) 판정.")
-                st.markdown(
-                    "<p class='rl-sub' style='margin:12px 0 2px'>📌 같은 화면에 함께 "
-                    "떠 있는 값 — 하루 동안 <b>움직이는 건 회복 시간과 단기 부하</b> "
-                    "둘뿐입니다. 위 <code>기준 시간</code> 시점에 보이는 대로 "
-                    "넣으면 됩니다</p>",
-                    unsafe_allow_html=True)
+                # 밤사이 확정돼 그날 고정인 값들 — 훈련 뒤 모드에서는 안 보입니다
+                tr = hrvms = slp = rhr = 0
+                hrv = "Balanced"
+                slh = sth = "(미입력)"
+                if _pm:
+                    bb = st.number_input(
+                        "Body Battery (지금)", 0, 100, 0, key="am_bb",
+                        help="훈련을 하면 줄어듭니다. 안 봤으면 0으로 두세요.")
+                else:
+                    m1 = ui.cols(4, 2, keep_row=True)
+                    tr = grid_at(m1, 0, 4).number_input(
+                        "Readiness", 0, 100, 0, key="am_tr",
+                        help="트레이닝 준비 상태 점수. 아침에 산출됩니다.")
+                    bb = grid_at(m1, 1, 4).number_input(
+                        "Body Battery", 0, 100, 0, key="am_bb",
+                        help="자는 동안 충전됩니다 — 기상 직후가 그날 최고값.")
+                    hrvms = grid_at(m1, 2, 4).number_input(
+                        "HRV (ms)", 0, 250, 0, key="am_hrv",
+                        help="밤사이 평균. 하루 동안 고정입니다.")
+                    hrv = grid_at(m1, 3, 4).selectbox(
+                        "HRV 상태",
+                        ["Balanced", "Unbalanced", "Low", "Poor", "No Status"],
+                        key="am_hrvs")
+                    m2 = ui.cols(4, 2, keep_row=True)
+                    slp = grid_at(m2, 0, 4).number_input("수면 점수", 0, 100, 0,
+                                                         key="am_slp")
+                    rhr = grid_at(m2, 1, 4).number_input("안정시 심박", 0, 120, 0,
+                                                         key="am_rhr")
+                    slh = grid_at(m2, 2, 4).selectbox(
+                        "최근 수면 점수", SLEEP_HIST_OPTS, key="am_slh",
+                        help="가민 준비 상태 화면의 ‘최근 수면 점수’(최근 3일) 판정.")
+                    sth = grid_at(m2, 3, 4).selectbox(
+                        "최근 스트레스", STRESS_HIST_OPTS, key="am_sth",
+                        help="가민 준비 상태 화면의 ‘최근 스트레스’(최근 3일) 판정.")
+                    st.markdown(
+                        "<p class='rl-sub' style='margin:12px 0 2px'>📌 같은 화면에 "
+                        "함께 떠 있는 값 — 하루 동안 <b>움직이는 건 회복 시간과 "
+                        "단기 부하</b> 둘뿐입니다. 위 <code>기준 시간</code> 시점에 "
+                        "보이는 대로 넣으면 됩니다</p>",
+                        unsafe_allow_html=True)
                 m3 = ui.cols(4, 2, keep_row=True)
                 a_ac = grid_at(m3, 0, 4).number_input(
                     "단기 부하 (급성)", 0, 3000, 0, key="am_acute",
@@ -2406,11 +2460,11 @@ if SEC == "today":
                     help="훈련 종료부터 줄어드는 카운트다운입니다. 위 기준 시간부터 "
                          "이만큼 남았다고 보고, 대시보드에서는 ‘지금 기준 남은 시간’으로 "
                          "다시 계산해 보여줍니다.")
-                a_im = grid_at(m3, 3, 4).number_input(
+                a_im = (0 if _pm else grid_at(m3, 3, 4).number_input(
                     "고강도 분 (당일)", 0, 500, 0, key="am_im",
                     help="**어제 하루치**를 넣으세요. 주간 누적은 이 값을 7일 굴려 "
                          "앱이 계산합니다 — 가민의 주간 값은 롤링 7일이라 매일 "
-                         "달라져서, 그걸 받아 적으면 추이가 읽히지 않습니다.")
+                         "달라져서, 그걸 받아 적으면 추이가 읽히지 않습니다."))
                 _ts_opts = ["(그대로 두기)"] + list(ana.TRAINING_STATUS.keys())
                 ts = st.selectbox(
                     "Training Status", _ts_opts,
@@ -2425,24 +2479,32 @@ if SEC == "today":
                     _at = datetime.combine(dd_, mtime)
                     _am_until = ((_at + timedelta(hours=float(a_rec))).strftime(
                         "%Y-%m-%d %H:%M") if a_rec else "")
+                    # 움직이는 값 — 아침이든 훈련 뒤든 항상 보냅니다
+                    _vals = {
+                        "StatusID": new_id("DS"),
+                        "EntryKind": "훈련 뒤" if _pm else "아침",
+                        "TrainingStatus": "" if ts == "(그대로 두기)" else ts,
+                        "BodyBattery": bb or "",
+                        "AcuteLoad": a_ac or "", "ChronicLoad": a_ch or "",
+                        "LoadRatio": a_lr or "",
+                        "RecoveryTimeHr": a_rec or "",
+                        "IntensityMinutesDay": a_im or "",
+                        "RecoveryUntil": _am_until,
+                        "Notes": nt,
+                        "MeasuredAt": f"{_at:%Y-%m-%d %H:%M} (가민 업데이트 기준)"}
+                    if not _pm:
+                        # 밤사이 확정되는 값 — 아침에만 보냅니다
+                        _vals.update({
+                            "TrainingReadiness": tr or "",
+                            "HRVStatus": hrv, "HRVms": hrvms or "",
+                            "SleepScore": slp or "", "RestingHR": rhr or "",
+                            "SleepHistory": "" if slh == "(미입력)" else slh,
+                            "StressHistory": "" if sth == "(미입력)" else sth})
                     r = db.upsert_row(
                         "DailyStatus",
-                        {"StatusDate": dd_.strftime("%Y-%m-%d")},
-                        {"StatusID": new_id("DS"), "EntryKind": "아침",
-                         "TrainingStatus": "" if ts == "(그대로 두기)" else ts,
-                         "TrainingReadiness": tr or "", "BodyBattery": bb or "",
-                         "HRVStatus": hrv, "HRVms": hrvms or "",
-                         "SleepScore": slp or "", "RestingHR": rhr or "",
-                         "SleepHistory": "" if slh == "(미입력)" else slh,
-                         "StressHistory": "" if sth == "(미입력)" else sth,
-                         "AcuteLoad": a_ac or "", "ChronicLoad": a_ch or "",
-                         "LoadRatio": a_lr or "",
-                         "RecoveryTimeHr": a_rec or "",
-                         "IntensityMinutesDay": a_im or "",
-                         "RecoveryUntil": _am_until,
-                         "Notes": nt,
-                         "MeasuredAt": f"{_at:%Y-%m-%d %H:%M} (가민 업데이트 기준)"})
-                    flash("오늘 값 " + ("갱신" if r == "updated" else "저장") + " 완료")
+                        {"StatusDate": dd_.strftime("%Y-%m-%d")}, _vals)
+                    flash(("훈련 뒤 값 " if _pm else "오늘 값 ")
+                          + ("갱신" if r == "updated" else "저장") + " 완료")
                     st.rerun()
 
             st.caption("비워 둔 항목(0)은 저장되지 않고, 이미 넣어둔 값도 지워지지 않습니다. "
@@ -2568,7 +2630,7 @@ if SEC == "train":
             if punit == CUSTOM_RANGE:
                 _cell = st if _mob else _c[1]
                 _d0 = st.session_state.get("hist_rng") or (
-                    date.today() - timedelta(days=13), date.today())
+                    today_local() - timedelta(days=13), today_local())
                 _picked = _cell.date_input("시작 ~ 끝", _d0, key="hist_rng")
                 if isinstance(_picked, (tuple, list)):
                     p_start = _picked[0] if _picked else _d0[0]
@@ -2600,11 +2662,11 @@ if SEC == "train":
                                    unsafe_allow_html=True)
                     if _cell.button(_lab, width="stretch", key=_key, help=_tip):
                         st.session_state["hist_date"] = period_shift(
-                            st.session_state.get("hist_date", date.today()), punit, _n)
+                            st.session_state.get("hist_date", today_local()), punit, _n)
                         st.rerun()
                 with _slot:
                     anchor = st.date_input(
-                        "기준 날짜", st.session_state.get("hist_date", date.today()),
+                        "기준 날짜", st.session_state.get("hist_date", today_local()),
                         key="hist_date")
                 p_start, p_end = period_range(anchor, punit)
 
@@ -3148,7 +3210,7 @@ if SEC == "train":
             ui.head("➕ 훈련 기록 추가")
             with st.form("f_new_workout", clear_on_submit=True):
                 a = ui.cols(3, 1, keep_row=True)
-                w_date = a[0].date_input("날짜", date.today())
+                w_date = a[0].date_input("날짜", today_local())
                 w_type = a[1 % len(a)].selectbox("유형", WORKOUT_TYPES)
                 w_proj = a[2 % len(a)].selectbox("프로젝트", list(proj_opts))
                 with st.expander("❓ 훈련 유형이 각각 뭔가요"):
@@ -3446,20 +3508,54 @@ if SEC == "train":
                                            f"{_z['bounds']} · LTHR {_z.get('lthr')} · "
                                            f"최대 {_z.get('max')} · 안정시 {_z.get('rest')}")
 
-                    _nrep = sum(1 for i in range(len(_fres))
-                                if str(_fed.iloc[i]["처리"]) == "시계 값으로 교체")
-                    if _nrep:
-                        st.warning(f"**{_nrep}건을 시계 값으로 교체**합니다 — 지금 "
-                                   "적혀 있는 값을 덮어씁니다. 되돌릴 수 없으니 "
-                                   "아래 백업을 먼저 받아 두시길 권합니다.")
+                    # 무엇을 덮어쓰게 되는지 **펼쳐 보지 않아도** 알 수 있게
+                    # 미리 세어 둡니다 — 저장 버튼에 그대로 적습니다.
+                    _cnt = {"새로": 0, "채움": 0, "덮어씀": 0, "건너뜀": 0}
+                    _over = []
+                    for _i, _r in enumerate(_fres):
+                        _row = _fed.iloc[_i]
+                        _mo = str(_row["처리"])
+                        if _mo == "건너뛰기":
+                            _cnt["건너뜀"] += 1
+                            continue
+                        if _mo == "새로 추가":
+                            _cnt["새로"] += 1
+                            continue
+                        if _match[_i]["row"] is None:
+                            _cnt["건너뜀"] += 1
+                            continue
+                        _pl0 = ana.fit_plan(
+                            _r["workout"], _match[_i]["row"],
+                            "fill" if _mo == "빈 칸만 채우기" else "replace",
+                            wtype=str(_row["유형"]))
+                        _c0 = _pl0["changes"]
+                        _nb = int((_c0["결과"] == "바꿈").sum()) if len(_c0) else 0
+                        _cnt["채움"] += (len(_c0) - _nb)
+                        _cnt["덮어씀"] += _nb
+                        if _nb:
+                            _over.append(f"{_r['workout']['WorkoutDate']} "
+                                         f"{_nb}칸")
+                    if _cnt["덮어씀"]:
+                        st.warning(
+                            f"⚠️ **이미 적혀 있는 값 {_cnt['덮어씀']}칸을 "
+                            f"덮어씁니다** ({' · '.join(_over)}). 어느 칸이 어떻게 "
+                            "바뀌는지는 위의 🔎 를 펼쳐 보세요. 되돌리려면 아래 "
+                            "백업을 먼저 받아 두셔야 합니다.")
                     st.download_button(
                         "⬇️ 지금 상태 백업 받기 (엑셀)", db.export_excel_bytes(),
-                        file_name=f"running-life-os-backup-{date.today():%Y%m%d}.xlsx",
+                        file_name=f"running-life-os-backup-{today_local():%Y%m%d}.xlsx",
                         mime=("application/vnd.openxmlformats-officedocument"
                               ".spreadsheetml.sheet"),
                         width="stretch", key="fitbak")
 
-                    if st.button("💾 위에 고른 대로 적용", width="stretch",
+                    _blabel = " · ".join(
+                        [x for x in (f"새로 {_cnt['새로']}건" if _cnt["새로"] else "",
+                                     f"빈 칸 {_cnt['채움']}칸" if _cnt["채움"] else "",
+                                     f"⚠️ 덮어씀 {_cnt['덮어씀']}칸"
+                                     if _cnt["덮어씀"] else "",
+                                     f"건너뜀 {_cnt['건너뜀']}건"
+                                     if _cnt["건너뜀"] else "") if x]) or "할 일 없음"
+                    if st.button(f"💾 적용 — {_blabel}", width="stretch",
                                  type="primary", key="fitsave"):
                         _n = _filled = _repl = _skip = 0
                         for _i, _r in enumerate(_fres):
@@ -3750,7 +3846,7 @@ if SEC == "train":
                             st.divider()
                             st.markdown("**CSV에 없는 항목** — 직접 입력하세요.")
                             d1 = ui.cols(3, 1, keep_row=True)
-                            w_date = d1[0].date_input("훈련 날짜 *", date.today(), key="imp_date")
+                            w_date = d1[0].date_input("훈련 날짜 *", today_local(), key="imp_date")
                             w_type2 = d1[1 % len(d1)].selectbox("유형 *", WORKOUT_TYPES, key="imp_type")
                             proj_i = d1[2 % len(d1)].selectbox("프로젝트", list(proj_opts), key="imp_proj")
                             d2 = ui.cols(3, 1, keep_row=True)
@@ -3836,7 +3932,7 @@ if SEC == "train":
                         fixed_date = None
                         if date_sel == "(직접 지정)":
                             st.warning("날짜 컬럼이 없습니다. 모든 행에 적용할 날짜를 고르세요.")
-                            fixed_date = st.date_input("적용 날짜", date.today(), key="imp_fixdate")
+                            fixed_date = st.date_input("적용 날짜", today_local(), key="imp_fixdate")
                         st.markdown("**CSV에 없는 항목** — 모든 행에 같은 값으로 들어갑니다. "
                                     "개별 값은 저장 후 ‘훈련 이력 → 수정’에서 고치세요.")
                         a1 = ui.cols(4, 1, keep_row=True)
@@ -3855,7 +3951,7 @@ if SEC == "train":
                                     skip += 1
                                     continue
                                 if date_sel == "(직접 지정)":
-                                    dt = (fixed_date or date.today()).strftime("%Y-%m-%d")
+                                    dt = (fixed_date or today_local()).strftime("%Y-%m-%d")
                                 else:
                                     try:
                                         dt = pd.to_datetime(r[date_sel]).strftime("%Y-%m-%d")
@@ -4874,7 +4970,7 @@ if SEC == "body":
                     "한 줄 = 한 번의 통증 · 끝난 날을 비워 두면 <b>진행 중</b>입니다")
             with st.form("f_injury", clear_on_submit=True):
                 i0 = ui.cols(4, 2, keep_row=True)
-                i_start = grid_at(i0, 0, 4).date_input("시작일", date.today(),
+                i_start = grid_at(i0, 0, 4).date_input("시작일", today_local(),
                                                        key="ij_start")
                 i_site = grid_at(i0, 1, 4).selectbox("부위", ana.INJURY_SITES,
                                                      key="ij_site")
@@ -4990,7 +5086,7 @@ if SEC == "body":
                     "Connect → 통계/성과 에서 주 1회만 확인하면 됩니다 · "
                     "기록해서 추이만 보는 값이라 지워도 다른 계산에는 영향이 없습니다")
             with st.form("f_metric", clear_on_submit=True):
-                md_ = st.date_input("측정일", date.today())
+                md_ = st.date_input("측정일", today_local())
 
                 st.markdown("<p class='rl-sub' style='margin:10px 0 2px'>기량</p>",
                             unsafe_allow_html=True)
@@ -5059,7 +5155,7 @@ if SEC == "body":
                     "가민에 <b>없는</b> 값만 옮겨 적습니다 · 주 1회면 충분합니다")
             with st.form("f_runalyze", clear_on_submit=True):
                 rz0 = ui.cols(4, 1, keep_row=True)
-                rz_date = rz0[0].date_input("측정일", date.today(), key="rz_date")
+                rz_date = rz0[0].date_input("측정일", today_local(), key="rz_date")
                 rz_tsb = rz0[1 % len(rz0)].number_input(
                     "TSB (폼)", -100.0, 100.0, 0.0, 0.1, format="%g", key="rz_tsb",
                     help="Training Stress Balance = CTL − ATL. 양수면 피로가 빠져 "
@@ -5189,8 +5285,8 @@ if SEC == "goal":
                     pn = st.text_input("프로젝트명", "Road to 10K Sub-50")
                     pv = st.text_input("목표", "10km 49:59")
                     pp = ui.cols(2, 2, keep_row=True)
-                    ps = pp[0].date_input("시작", date.today())
-                    pt = pp[1].date_input("목표일", date.today() + timedelta(days=90))
+                    ps = pp[0].date_input("시작", today_local())
+                    pt = pp[1].date_input("목표일", today_local() + timedelta(days=90))
                     pstat = st.selectbox("상태", ["ACTIVE", "PLANNED", "COMPLETED"])
                     if st.form_submit_button("생성", width="stretch", type="primary"):
                         db.append_rows("Projects", pd.DataFrame([{
@@ -5229,7 +5325,7 @@ if SEC == "goal":
                     rn = st.text_input("대회명")
                     rr = ui.cols(2, 2, keep_row=True)
                     rd = rr[0].selectbox("종목", ["5km", "10km", "Half Marathon", "Full Marathon"])
-                    rdate = rr[1].date_input("날짜", date.today() + timedelta(days=60))
+                    rdate = rr[1].date_input("날짜", today_local() + timedelta(days=60))
                     rg = st.text_input("목표 기록 (예: 1:45:00)", "")
                     if st.form_submit_button("등록", width="stretch", type="primary"):
                         dmap = {"5km": 5.0, "10km": 10.0,
@@ -5482,7 +5578,7 @@ if SEC == "settings":
                        "값이 실제로 달라졌을 때만 **적용일** 날짜로 이력이 한 줄 쌓입니다. "
                        "쌓인 이력은 이 아래 **기준값 이력 수정 / 삭제**에서 고치거나 지웁니다.")
             with st.form("f_ath"):
-                eff = st.date_input("적용일", date.today(), key="prof_eff",
+                eff = st.date_input("적용일", today_local(), key="prof_eff",
                                     help="이 날짜부터 아래 값이 적용됩니다. "
                                          "이전 훈련은 그 전 값으로 계산됩니다.")
                 p1 = ui.cols(4, 1, keep_row=True)
@@ -5492,8 +5588,8 @@ if SEC == "settings":
                 a_h = p1[2 % len(p1)].number_input("키 (cm)", 100, 230, int(fnum(ATH.get("HeightCm"), 175)))
                 _by0 = ana.age_from_birth(ATH.get("BirthDate"))
                 a_by = p1[3 % len(p1)].number_input(
-                    "출생연도", 1930, date.today().year - 10,
-                    int(date.today().year - _by0) if np.isfinite(_by0) else 1985,
+                    "출생연도", 1930, today_local().year - 10,
+                    int(today_local().year - _by0) if np.isfinite(_by0) else 1985,
                     help="Endurance Score 등급은 나이대별 기준이 달라서 필요합니다.")
                 p2 = ui.cols(3, 1, keep_row=True)
                 a_rest = p2[0].number_input("안정시 심박", 30, 100, int(HR_REST))
@@ -5745,7 +5841,7 @@ if SEC == "settings":
                         "기존 누적 (km)", 0.0, 2000.0, 0.0, 1.0,
                         help="앱을 쓰기 전까지 이미 신은 거리.")
                     sasof = grid_at(sd_, 1, 3).date_input(
-                        "기존 누적 기준일", date.today(), key="shoe_asof",
+                        "기존 누적 기준일", today_local(), key="shoe_asof",
                         help="위 '기존 누적'이 **언제까지**를 더한 값인지. "
                              "이 날짜 다음 날부터의 훈련만 누적에 더해지므로, "
                              "나중에 예전 기록을 넣어도 거리가 두 번 세어지지 않습니다.")
@@ -5754,7 +5850,7 @@ if SEC == "settings":
                     if st.form_submit_button("등록", width="stretch", type="primary"):
                         db.append_rows("Shoes", pd.DataFrame([{
                             "ShoeID": new_id("SHOE"), "ShoeName": sn, "Brand": sbrand,
-                            "PurchaseDate": date.today().strftime("%Y-%m-%d"),
+                            "PurchaseDate": today_local().strftime("%Y-%m-%d"),
                             "InitialDistanceKm": sinit, "TargetDistanceKm": starg,
                             "Status": "ACTIVE", "Category": ", ".join(scat), "Notes": "",
                             "InitialAsOf": sasof.strftime("%Y-%m-%d")}]))
@@ -5827,7 +5923,7 @@ if SEC == "settings":
                     if st.form_submit_button("저장", width="stretch", type="primary"):
                         db.append_rows("CoachNotes", pd.DataFrame([{
                             "NoteID": new_id("NOTE"), "ProjectID": "",
-                            "NoteDate": date.today().strftime("%Y-%m-%d"),
+                            "NoteDate": today_local().strftime("%Y-%m-%d"),
                             "Category": cat, "NoteText": txt}]))
                         flash("저장 완료")
                         st.rerun()
@@ -5923,7 +6019,7 @@ if SEC == "settings":
         with ui.card("backup"):
             ui.head("💾 백업", f"현재 저장소: {db.backend_name()}")
             st.download_button("전체 데이터 엑셀로 내려받기", db.export_excel_bytes(),
-                               file_name=f"RunningLifeOS_Backup_{date.today():%Y%m%d}.xlsx",
+                               file_name=f"RunningLifeOS_Backup_{today_local():%Y%m%d}.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                width="stretch")
             st.caption(".fit 을 ‘시계 값으로 교체’로 넣기 전처럼 **되돌릴 수 없는 일**을 "
@@ -5967,7 +6063,7 @@ if SEC == "settings":
                     st.download_button(
                         "⬇️ 되돌리기 전에 지금 상태 먼저 받기",
                         db.export_excel_bytes(),
-                        file_name=f"RunningLifeOS_BeforeRestore_{date.today():%Y%m%d}.xlsx",
+                        file_name=f"RunningLifeOS_BeforeRestore_{today_local():%Y%m%d}.xlsx",
                         mime=("application/vnd.openxmlformats-officedocument"
                               ".spreadsheetml.sheet"),
                         width="stretch", key="rest_bak")
