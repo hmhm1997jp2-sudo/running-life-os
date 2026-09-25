@@ -6,6 +6,7 @@ Running Life OS — 개인 러닝 관리·분석 시스템
 """
 
 import hashlib
+import math
 import inspect
 import re
 import uuid
@@ -942,6 +943,76 @@ def workout_trend_charts(wt, keys, multi=True, h_pc=118, h_mb=98):
     return charts or None
 
 
+# ── 가민 시계처럼 생긴 반원 게이지 ─────────────────────────────────────────
+# Altair 대신 SVG로 직접 그립니다 — 가운데 숫자, 띠 색, 표식 위치를 정확히
+# 잡을 수 있고 테마 색을 그대로 쓸 수 있습니다.
+GAUGE_START, GAUGE_SWEEP = -120.0, 240.0      # 아래쪽 120°는 비워 둡니다
+
+# 준비 상태 띠 — 가민 등급 구간(1~24 나쁨 / 25~49 낮음 / 50~74 중간 /
+# 75~94 높음 / 95~100 최상)을 그대로 씁니다. 색은 이 앱의 상태 색과 맞춥니다.
+READINESS_BANDS = [(0, 25, C["red"]), (25, 50, C["amber"]), (50, 75, C["slate"]),
+                   (75, 95, C["primary"]), (95, 100, C["teal"])]
+
+
+def _gauge_xy(v: float, r: float, cx: float = 100.0, cy: float = 100.0):
+    a = math.radians(GAUGE_START + max(min(v, 100.0), 0.0) / 100.0 * GAUGE_SWEEP)
+    return cx + r * math.sin(a), cy - r * math.cos(a)
+
+
+def _gauge_arc(v0: float, v1: float, r: float, color: str, w: float) -> str:
+    x0, y0 = _gauge_xy(v0, r)
+    x1, y1 = _gauge_xy(v1, r)
+    large = 1 if (v1 - v0) / 100.0 * GAUGE_SWEEP > 180 else 0
+    return (f"<path d='M {x0:.2f} {y0:.2f} A {r} {r} 0 {large} 1 {x1:.2f} {y1:.2f}' "
+            f"fill='none' stroke='{color}' stroke-width='{w}' stroke-linecap='round'/>")
+
+
+def gauge_svg(score, bands, center_sub: str = "", unit: str = "",
+              size: int = 210) -> str:
+    """0~100 게이지. bands = [(하한, 상한, 색), ...] · score 위치에 표식 하나."""
+    v = fnum(score, float("nan"))
+    r, w = 80.0, 15.0
+    arcs = "".join(_gauge_arc(lo, hi, r, col, w) for lo, hi, col in bands)
+    mark = ""
+    if np.isfinite(v) and v > 0:
+        mx, my = _gauge_xy(v, r)
+        arcs += (f"<circle cx='{mx:.2f}' cy='{my:.2f}' r='9' "
+                 f"fill='var(--surface)' stroke='var(--text)' stroke-width='3'/>")
+        big = f"{v:,.0f}"
+    else:
+        big = "—"
+    return (
+        f"<div style='display:flex;justify-content:center'>"
+        f"<svg viewBox='0 0 200 185' width='{size}' height='{int(size * 0.93)}' "
+        f"role='img' aria-label='게이지 {big}'>"
+        f"{arcs}{mark}"
+        f"<text x='100' y='104' text-anchor='middle' "
+        f"style='font-size:44px;font-weight:700;fill:var(--text)'>{big}</text>"
+        f"<text x='100' y='126' text-anchor='middle' "
+        f"style='font-size:13px;fill:var(--text-3)'>{unit}</text>"
+        f"<text x='100' y='152' text-anchor='middle' "
+        f"style='font-size:15px;font-weight:600;fill:var(--text-2)'>{center_sub}</text>"
+        f"</svg></div>")
+
+
+def factor_rows_html(factors) -> str:
+    """준비 상태 요인 목록 — 이름 · 값 · 상태 + 색점."""
+    out = ""
+    for f in factors:
+        dot = {"ok": "var(--ok)", "warn": "var(--warn)",
+               "bad": "var(--bad)"}.get(f["tone"], "var(--text-3)")
+        out += ("<div class='rl-row'>"
+                f"<span class='k'>{f['name']}"
+                + (f" <b style='color:var(--text-2)'>{f['value']}</b>"
+                   if f["value"] else "")
+                + f" <span style='opacity:.65'>· {f['note']}</span></span>"
+                f"<span class='v'>{f['state']}"
+                f"<span style='display:inline-block;width:8px;height:8px;"
+                f"border-radius:50%;background:{dot};margin-left:7px;"
+                f"vertical-align:middle'></span></span></div>")
+    return out
+
+
 def stacked_charts(charts, gap=6):
     """위아래로 이어지는 작은 그래프들을 그립니다.
     Vega의 vconcat은 컨테이너 폭에 맞춰지지 않아(autosize 미지원) 카드 밖으로
@@ -1409,11 +1480,36 @@ with tab_today:
                ("안정시 심박", gv("RestingHR", "{:.0f}", " bpm")),
                ("입력한 날", gdate("TrainingStatus").replace(" 입력", ""))])
 
+    # ── 오늘의 준비 상태 — 시계 화면처럼 게이지 하나로 ────────────────────
+    _rd_tone, _rd_kr = ana.readiness_meta(G.get("TrainingReadiness"))
+    _factors = ana.readiness_factors(G)
     alerts = ana.garmin_alerts(G) + ana.build_alerts(df_w, df_shoes, daily, weekly, inten)
-    if alerts:
+
+    _top = ui.cols(2, 1)
+    with _top[0]:
+        with ui.card("rdy"):
+            ui.head("🔋 트레이닝 준비 상태",
+                    "시계의 ‘요인’ 화면과 같습니다")
+            st.markdown(
+                gauge_svg(G.get("TrainingReadiness"), READINESS_BANDS,
+                          center_sub=_rd_kr, unit="/ 100")
+                + factor_rows_html(_factors), unsafe_allow_html=True)
+            _miss = [f for f in _factors if f["state"] == "—"]
+            if _miss:
+                st.caption(f"‘—’ {len(_miss)}개는 아직 안 넣은 항목입니다 — "
+                           "‘✍️ 기록 → ⌚ 가민 일일’에서 채우면 시계 화면과 "
+                           "똑같아집니다.")
+    with _top[1 % len(_top)]:
         with ui.card("alerts"):
-            ui.head("🔔 오늘의 체크포인트")
-            render_alerts(alerts[:6])
+            ui.head("🔔 오늘의 체크포인트",
+                    "지금 신경 쓸 것만 — 없으면 그대로 가면 됩니다")
+            if alerts:
+                render_alerts(alerts[:7])
+            else:
+                st.markdown(
+                    "<div style='padding:22px 4px;text-align:center;"
+                    "color:var(--text-3)'>👍 특별히 걸리는 것이 없습니다</div>",
+                    unsafe_allow_html=True)
 
     # ─────────────────────────────────────────────────────────────────
     # 이번 주 — 가장 자주 보게 되는 숫자라 맨 위에 둡니다
@@ -1539,40 +1635,6 @@ with tab_today:
                    "아니니, ‘✍️ 기록 → ⌚ 가민 일일’에서 오늘 값을 넣어주세요.")
     st.caption("타일 안의 작은 선은 **최근 30회 입력분**입니다 (마우스를 올리면 날짜별 값). "
                "더 긴 추세는 ‘📊 분석 → ⌚ 가민 추이’ 탭에서 기간을 골라 보세요.")
-
-    # ── 트레이닝 준비 상태 요인 — 시계의 '요인' 화면과 같은 순서 ──────────
-    _rd_tone, _rd_kr = ana.readiness_meta(G.get("TrainingReadiness"))
-    _factors = ana.readiness_factors(G)
-    if any(f["state"] != "—" for f in _factors):
-        with ui.card("rdy"):
-            ui.head("🔋 트레이닝 준비 상태 요인",
-                    "시계의 ‘요인’ 화면과 같은 항목입니다 — 어떤 것이 점수를 "
-                    "끌어내리고 있는지 한눈에 보려고 둡니다")
-            _rows = ""
-            for f in _factors:
-                _dot = {"ok": "var(--ok)", "warn": "var(--warn)",
-                        "bad": "var(--bad)"}.get(f["tone"], "var(--text-3)")
-                _rows += (
-                    "<div class='rl-row'>"
-                    f"<span class='k'>{f['name']}"
-                    + (f" <b style='color:var(--text-2)'>{f['value']}</b>"
-                       if f["value"] else "")
-                    + f" <span style='opacity:.65'>· {f['note']}</span></span>"
-                    f"<span class='v'>{f['state']}"
-                    f"<span style='display:inline-block;width:8px;height:8px;"
-                    f"border-radius:50%;background:{_dot};margin-left:7px;"
-                    f"vertical-align:middle'></span></span></div>")
-            st.markdown(
-                f"<div class='rl-row' style='border-bottom:none'>"
-                f"<span class='k'>준비 상태 점수</span>"
-                f"<span class='v' style='font-size:1.15rem'>"
-                f"{gv('TrainingReadiness', '{:.0f}')} "
-                f"{ui.pill(_rd_kr, _rd_tone)}</span></div>" + _rows,
-                unsafe_allow_html=True)
-            if any(f["state"] == "—" for f in _factors):
-                st.caption("‘—’ 는 아직 안 넣은 항목입니다 — "
-                           "‘✍️ 기록 → ⌚ 가민 일일 → 🌅 아침 체크인’에서 채우면 "
-                           "여기가 시계 화면과 똑같아집니다.")
 
     em = ana.endurance_meta(G.get("EnduranceScore"), AGE, SEX)
     hm = ana.hill_meta(G.get("HillScore"))
