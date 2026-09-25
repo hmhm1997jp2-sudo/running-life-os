@@ -66,7 +66,15 @@ SCHEMA: dict[str, list[str]] = {
                 "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
                 "Pred5K", "Pred10K", "PredHalf", "PredFull",
                 "LTPace", "LTHR", "LTPower",
-                "WeightKg", "BodyFatPct", "Notes"],
+                "WeightKg", "BodyFatPct", "Notes",
+                # 맨 뒤에 추가 — RUNALYZE 에서 옮겨 적는 값 (가민에 없는 지표)
+                "RzTSB", "RzMarathonShape", "RzEffVO2max"],
+    # ── 체중 · 체성분 (매주 체중계 + 가끔 인바디) ─────────────────────────
+    #    체중 이력은 이 시트가 원본입니다. Metrics 의 WeightKg 는 프로필
+    #    기준값(표시용)이라 매주 쌓지 않습니다.
+    "Body": ["BodyID", "MeasureDate", "Source", "WeightKg", "BodyFatPct",
+             "BodyFatKg", "SkeletalMuscleKg", "BMI", "BodyWaterL",
+             "ProteinKg", "MineralKg", "VisceralFatLevel", "BMR", "Notes"],
     "Shoes": ["ShoeID", "ShoeName", "Brand", "PurchaseDate", "InitialDistanceKm",
               "TargetDistanceKm", "Status", "Category", "Notes",
               # 맨 뒤에 추가 — '기존 누적'이 어느 날짜까지를 포함한 값인지.
@@ -98,11 +106,15 @@ NUMERIC_COLS = {
     "AvgPower", "AvgCadence", "ElevationGainM", "Temperature", "RPE", "LegFatigue",
     "CardioFatigue", "TrainingReadiness", "BodyBattery", "SleepScore", "RestingHR",
     "WeightKg", "BodyFatPct", "VO2Max", "LTPower", "InitialDistanceKm",
+    # 체성분 (인바디)
+    "BodyFatKg", "SkeletalMuscleKg", "BMI", "BodyWaterL", "ProteinKg",
+    "MineralKg", "VisceralFatLevel", "BMR",
     "TargetDistanceKm",
     # 가민 지표
     "AcuteLoad", "ChronicLoad", "LoadRatio", "RecoveryTimeHr", "HRVms", "IntensityMinutes",
     "HRRest", "HRMax",
     "FitnessAge", "EnduranceScore", "HillScore",
+    "RzTSB", "RzMarathonShape", "RzEffVO2max",
     "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
     "AerobicTE", "AnaerobicTE", "TrainingLoad",
     "LapNo", "ElevGainM", "ElevLossM",
