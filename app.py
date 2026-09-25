@@ -78,7 +78,7 @@ _REQUIRED = {
                           "pill", "rows", "tiles"]),
     "db.py":        (db, ["append_rows", "backend_name", "diagnose", "export_excel_bytes",
                           "get_athlete", "init_db", "load_data", "repair", "repair_preview",
-                          "delete_rows_by", "reset_db", "restore_excel", "restore_preview", "read_backup", "save_athlete", "update_row", "delete_row", "upsert_row", "write_sheet"]),
+                          "delete_rows_by", "replace_rows_by", "reset_db", "restore_excel", "restore_preview", "read_backup", "save_athlete", "update_row", "delete_row", "upsert_row", "write_sheet"]),
 }
 _stale = [(f, [a for a in attrs if not hasattr(m, a)]) for f, (m, attrs) in _REQUIRED.items()
           if [a for a in attrs if not hasattr(m, a)]]
@@ -304,22 +304,54 @@ def new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8].upper()}"
 
 
+# 저장 알림이 얼마나 남아 있을지 (초). 이 시간이 지나면 저절로 사라집니다.
+FLASH_KEEP_SEC = 180
+
+
 def flash(msg: str, icon: str = "✅") -> None:
-    """저장 직후 알림. st.success() 를 쓰고 바로 st.rerun() 을 하면 그 메시지가
-    **화면에 뜨기도 전에** 사라집니다(다시 그리면서 버려집니다). 그래서 문구를
-    session_state 에 담아 두고, 다음 실행 맨 위에서 토스트로 한 번 띄웁니다.
-    토스트는 화면 구석에 고정이라 폼 아래까지 스크롤해 있어도 보입니다."""
-    st.session_state["_flash"] = (str(msg), icon)
+    """저장 직후 알림.
+
+    st.success() 를 쓰고 바로 st.rerun() 을 하면 그 메시지는 **화면에 뜨기도
+    전에** 사라집니다(다시 그리면서 버려집니다). 그래서 문구를 session_state 에
+    담아 두고, 다음 실행에서 보여 줍니다.
+    토스트는 몇 초 만에 사라져서 놓치기 쉬우므로, 화면 위쪽에 **띠**로도
+    남겨 둡니다 — 직접 닫거나 3분이 지나면 없어집니다.
+    """
+    st.session_state["_flash"] = (str(msg), icon, now_local().isoformat())
+    st.session_state.pop("_flash_toasted", None)
 
 
 def show_flash() -> None:
-    """flash() 로 담아 둔 알림이 있으면 띄우고 지웁니다 — 실행당 한 번."""
-    f = st.session_state.pop("_flash", None)
-    if f:
+    """flash() 로 담아 둔 알림을 보여 줍니다 — 토스트 한 번 + 띠는 남김."""
+    f = st.session_state.get("_flash")
+    if not f:
+        return
+    msg, icon = str(f[0]), str(f[1])
+    at = f[2] if len(f) > 2 else None
+    # 토스트는 저장한 직후 한 번만
+    if not st.session_state.get("_flash_toasted"):
+        st.session_state["_flash_toasted"] = True
         try:
-            st.toast(f[0], icon=f[1])
+            st.toast(msg, icon=icon)
         except Exception:                                   # pragma: no cover
-            st.success(f[0])
+            pass
+    if at:
+        try:
+            if (now_local() - pd.Timestamp(at)).total_seconds() > FLASH_KEEP_SEC:
+                st.session_state.pop("_flash", None)
+                st.session_state.pop("_flash_toasted", None)
+                return
+        except Exception:                                   # pragma: no cover
+            pass
+    with st.container(key="rlflash"):
+        _fc = st.columns([20, 1])
+        _fc[0].markdown(
+            f"<div class='rl-flash'><span class='i'>{icon}</span>{msg}</div>",
+            unsafe_allow_html=True)
+        if _fc[1 % len(_fc)].button("✕", key="flash_x", help="알림 닫기"):
+            st.session_state.pop("_flash", None)
+            st.session_state.pop("_flash_toasted", None)
+            st.rerun()
 
 
 def src_key(d: str, dist: float, dur: float) -> str:
@@ -1572,25 +1604,26 @@ if ui.is_mobile():
                 f"<p class='rl-sub'>{db.backend_name()} · HR {HR_REST:.0f}–{HR_MAX:.0f}</p>",
                 unsafe_allow_html=True)
     # 탭에도 '⚙️ 설정'이 있어서 이름이 겹치면 헷갈립니다 — 여긴 화면/잠금 전용
-    with st.popover("⚙️ 화면", width="stretch"):
+    with st.popover("화면", width="stretch"):
         ui.mode_switch()
         st.caption("**밝게 / 어둡게는 기기 설정을 따라갑니다.** 폰의 다크 모드를 "
                    "켜면 이 앱도 어두워집니다.")
-        if st.button("🔒 잠금", width="stretch"):
+        if st.button("잠금", width="stretch"):
             logout()
 else:
-    h1, h2, h3 = st.columns([7, 1.1, 1.1])
+    with st.container(key="rlhead"):
+        h1, h2, h3 = st.columns([8, 1, 1])
     h1.markdown("<p class='rl-title'>🏃 Running Life OS</p>"
                 f"<p class='rl-sub'>{db.backend_name()} 연결됨 · "
                 f"HR {HR_REST:.0f}–{HR_MAX:.0f} bpm</p>", unsafe_allow_html=True)
     # 화면 모드는 한 번 정하면 거의 안 바꾸는 값이라, 매 화면 위쪽을 차지하지 않도록
     # 팝오버 안으로 넣었습니다.
-    with h2.popover("⚙️ 화면"):
+    with h2.popover("화면"):
         ui.mode_switch()
         st.caption("**밝게 / 어둡게는 기기 설정을 그대로 따라갑니다.** 폰·PC의 "
                    "다크 모드를 켜면 이 앱도 같이 어두워집니다 (앱 안에 고르는 "
                    "칸은 없습니다).")
-    if h3.button("🔒 잠금", width="stretch"):
+    if h3.button("잠금", width="stretch"):
         logout()
 
 st.write("")
@@ -1619,33 +1652,35 @@ for _, r in df_shoes.iterrows():
 # 입력은 한곳에 모으지 않고 **그 값을 보는 화면**에 붙였습니다 — 체중은 몸,
 # 훈련은 훈련, 아침 가민 값은 오늘.
 SECTIONS = ["today", "train", "trend", "body", "goal", "settings"]
-SEC_LABEL = {"today": ("🏠 오늘", "🏠 오늘"), "train": ("🏃 훈련", "🏃 훈련"),
-             "trend": ("📈 추이", "📈 추이"), "body": ("❤️ 몸", "❤️ 몸"),
-             "goal": ("🎯 목표", "🎯 목표"), "settings": ("⚙️ 설정", "⚙️ 설정")}
+# 이동 줄에는 그림문자를 쓰지 않습니다 — 기기마다 크기·모양이 제각각이라
+# 줄이 들쭉날쭉해 보입니다. 카드 제목에는 그대로 둡니다(훑어볼 때 도움이 됩니다).
+SEC_LABEL = {"today": ("오늘", "오늘"), "train": ("훈련", "훈련"),
+             "trend": ("추이", "추이"), "body": ("몸", "몸"),
+             "goal": ("목표", "목표"), "settings": ("설정", "설정")}
 # 화면: (키, PC 이름, 모바일 이름)
 SCREENS = {
-    "today": [("summary", "🏠 요약", "🏠 요약"),
-              ("morning", "⌚ 가민 입력", "⌚ 입력")],
-    "train": [("hist", "📋 훈련 이력", "📋 이력"),
-              ("new", "➕ 훈련 입력", "➕ 입력"),
-              ("imp", "📥 파일 가져오기", "📥 파일")],
-    "trend": [("garmin", "⌚ 가민 추이", "⌚ 가민"),
-              ("stat", "📈 계산 통계", "📈 통계"),
-              ("zone", "🎚️ 심박존", "🎚️ 존")],
-    "body": [("body", "⚖️ 체중 · 부상", "⚖️ 체중"),
-             ("measure", "📈 가민 측정", "📈 측정")],
-    "goal": [("proj", "🎯 프로젝트", "🎯 프로젝트"),
-             ("race", "🏁 대회", "🏁 대회"),
-             ("pred", "🔮 기량 예측", "🔮 예측"),
-             ("pr", "🏆 개인 기록", "🏆 기록")],
-    "settings": [("prof", "👤 프로필 & 기준값", "👤 프로필"),
-                 ("shoe", "👟 러닝화", "👟 러닝화"),
-                 ("coach", "🤖 코치 노트", "🤖 코치"),
-                 ("backup", "💾 백업 & 도구", "💾 백업")],
+    "today": [("summary", "요약", "요약"),
+              ("morning", "가민 입력", "입력")],
+    "train": [("hist", "훈련 이력", "이력"),
+              ("new", "훈련 입력", "입력"),
+              ("imp", "파일 가져오기", "파일")],
+    "trend": [("garmin", "가민 추이", "가민"),
+              ("stat", "계산 통계", "통계"),
+              ("zone", "심박존", "존")],
+    "body": [("body", "체중 · 부상", "체중"),
+             ("measure", "가민 측정", "측정")],
+    "goal": [("proj", "프로젝트", "프로젝트"),
+             ("race", "대회", "대회"),
+             ("pred", "기량 예측", "예측"),
+             ("pr", "개인 기록", "기록")],
+    "settings": [("prof", "프로필 & 기준값", "프로필"),
+                 ("shoe", "러닝화", "러닝화"),
+                 ("coach", "코치 노트", "코치"),
+                 ("backup", "백업 & 도구", "백업")],
 }
 
 
-def nav_pick(key: str, options: list[str], labels: dict) -> str:
+def nav_pick(key: str, options: list[str], labels: dict, wide: bool = False) -> str:
     """세그먼트 한 줄. 위젯 키에 판 번호를 붙여 둡니다 — 스트림릿은 위젯이
     만들어진 뒤에는 그 키의 session_state 를 못 바꾸기 때문에, 프로그램에서
     화면을 옮기려면 위젯을 새로 만들어야 합니다(nav_go)."""
@@ -1656,7 +1691,8 @@ def nav_pick(key: str, options: list[str], labels: dict) -> str:
     with st.container(key=f"rlnav-{key}"):
         v = st.segmented_control("이동", options, default=cur, key=f"{key}__w{ver}",
                                  format_func=lambda k: labels[k],
-                                 label_visibility="collapsed", width="stretch")
+                                 label_visibility="collapsed",
+                                 width="stretch" if wide else "content")
     v = v if v in options else cur          # 같은 칸을 다시 누르면 None 이 옵니다
     st.session_state[key] = v
     return v
@@ -1694,7 +1730,7 @@ SEC = nav_pick("nav_sec", SECTIONS, {k: v[1 if _mb else 0]
                                      for k, v in SEC_LABEL.items()})
 _scr_defs = SCREENS[SEC]
 SCR = nav_pick(f"nav_scr_{SEC}", [k for k, _p, _m in _scr_defs],
-               {k: (m if _mb else p) for k, p, m in _scr_defs})
+               {k: (m if _mb else p) for k, p, m in _scr_defs}, wide=True)
 
 
 # 저장 직후의 알림 — 쓰기 → st.rerun() 을 거쳐 여기서 한 번 띄웁니다
@@ -2400,7 +2436,7 @@ if SEC == "today":
                            "적으면 됩니다. 훈련마다 붙는 **운동 부하**는 여기가 "
                            "아니라 ‘➕ 훈련 입력 / 📥 파일 가져오기’에서 넣습니다.  \n"
                            "오후에 훈련을 하면 부하·회복·고강도가 달라집니다 — "
-                           "그때는 위에서 **‘훈련 뒤’**를 고르세요.")
+                           "그때는 위에서 **훈련 뒤**를 고르세요.")
             if _pm:
                 st.info("훈련을 하면 **단기 부하 · 회복 시간 · 고강도 분**이 "
                         "달라집니다 — 그 셋만 다시 넣으세요. 아침에 적은 "
@@ -3608,6 +3644,14 @@ if SEC == "train":
                         if _nb:
                             _over.append(f"{_r['workout']['WorkoutDate']} "
                                          f"{_nb}칸")
+                    _napply = sum(v for k, v in _cnt.items() if k != "건너뜀")
+                    _nfile = len(_fres) - _cnt["건너뜀"]
+                    if _nfile > 10 and db.backend_name().startswith("Google"):
+                        st.warning(
+                            f"⏳ 한 번에 **{_nfile}건**입니다. 구글 시트는 분당 "
+                            "호출 한도가 있어서 **10건쯤에서 끊어** 올리시는 걸 "
+                            "권합니다. 한도에 걸리면 거기까지는 저장되고 "
+                            "어디까지 됐는지 알려 드립니다.")
                     if _cnt["덮어씀"]:
                         st.warning(
                             f"⚠️ **이미 적혀 있는 값 {_cnt['덮어씀']}칸을 "
@@ -3632,123 +3676,160 @@ if SEC == "train":
                                  type="primary", key="fitsave"):
                         _n = _filled = _repl = _skip = 0
                         _logs = []
+                        # 구글 시트는 **분당** 읽기·쓰기 60회가 한도입니다.
+                        # 한 건에 대여섯 번이 나가니 쉬지 않고 돌리면 한도에
+                        # 걸립니다 — 진행 막대를 보여주며 사이를 띄웁니다.
+                        _slow = db.backend_name().startswith("Google")
+                        _todo = sum(1 for i in range(len(_fres))
+                                    if str(_fed.iloc[i]["처리"]) != "건너뛰기")
+                        _prog = st.progress(0.0, "시작합니다…") if _todo > 1 else None
+                        _done_i = 0
+                        _quota = None
                         for _i, _r in enumerate(_fres):
                             _row = _fed.iloc[_i]
                             _mode = str(_row["처리"])
                             if _mode == "건너뛰기":
                                 _skip += 1
                                 continue
+                            if _quota:
+                                break
                             _rr = ana.fit_rescale(_r, float(_row["거리(km)"]))
                             _w = _rr["workout"]
                             _m = _match[_i]
                             _wtype = str(_row["유형"])
+                            _done_i += 1
+                            if _prog:
+                                _prog.progress(_done_i / max(_todo, 1),
+                                               f"{_done_i}/{_todo} — "
+                                               f"{_w['WorkoutDate']}")
 
                             _fill_n = _over_n = 0
                             _field_txt = ""
-                            if _mode == "새로 추가":
-                                _wid = new_id("WO")
-                                _out = {kk: vv for kk, vv in _w.items()
-                                        if not kk.startswith("_")}
-                                _out.update({
-                                    "WorkoutID": _wid, "ProjectID": proj_opts[_fproj],
-                                    "ShoeID": shoe_opts[_fshoe], "WorkoutType": _wtype,
-                                    "Notes": _fnote or f"fit 가져오기 ({_r.get('name', '')})",
-                                    "SourceKey": src_key(_w["WorkoutDate"],
-                                                         _w["DistanceKm"],
-                                                         _w["DurationMinutes"])})
-                                db.append_rows("Workouts", pd.DataFrame([_out]))
-                                _n += 1
-                                _field_txt = "새 훈련"
-                            else:
-                                if _m["row"] is None:
-                                    _skip += 1
-                                    continue
-                                _wid = str(_m["row"]["WorkoutID"])
-                                _pl = ana.fit_plan(
-                                    _w, _m["row"],
-                                    "fill" if _mode == "빈 칸만 채우기" else "replace",
-                                    wtype=_wtype)
-                                _cg = _pl["changes"]
-                                _over_n = int((_cg["결과"] == "바꿈").sum()) if len(_cg) else 0
-                                _fill_n = (len(_cg) - _over_n) if len(_cg) else 0
-                                _field_txt = ", ".join(
-                                    (f"{r['항목']}({r['지금']}→{r['파일']})"
-                                     if r["결과"] == "바꿈" else r["항목"])
-                                    for _, r in _cg.iterrows())[:480]
-                                _vals = dict(_pl["values"])
-                                if _vals:
-                                    # 거리·시간이 바뀌면 중복 판정 키도 다시 만듭니다
-                                    _vals["SourceKey"] = src_key(
-                                        _vals.get("WorkoutDate", _m["row"].get("WorkoutDate")),
-                                        _vals.get("DistanceKm",
-                                                  _m["row"].get("DistanceKm")),
-                                        _vals.get("DurationMinutes",
-                                                  _m["row"].get("DurationMinutes")))
-                                    db.update_row("Workouts", "WorkoutID", _wid, _vals)
-                                if _mode == "빈 칸만 채우기":
-                                    _filled += 1
-                                else:
-                                    _repl += 1
+                            try:
+                              if _mode == "새로 추가":
+                                  _wid = new_id("WO")
+                                  _out = {kk: vv for kk, vv in _w.items()
+                                          if not kk.startswith("_")}
+                                  _out.update({
+                                      "WorkoutID": _wid, "ProjectID": proj_opts[_fproj],
+                                      "ShoeID": shoe_opts[_fshoe], "WorkoutType": _wtype,
+                                      "Notes": _fnote or f"fit 가져오기 ({_r.get('name', '')})",
+                                      "SourceKey": src_key(_w["WorkoutDate"],
+                                                           _w["DistanceKm"],
+                                                           _w["DurationMinutes"])})
+                                  db.append_rows("Workouts", pd.DataFrame([_out]))
+                                  _n += 1
+                                  _field_txt = "새 훈련"
+                              else:
+                                  if _m["row"] is None:
+                                      _skip += 1
+                                      continue
+                                  _wid = str(_m["row"]["WorkoutID"])
+                                  _pl = ana.fit_plan(
+                                      _w, _m["row"],
+                                      "fill" if _mode == "빈 칸만 채우기" else "replace",
+                                      wtype=_wtype)
+                                  _cg = _pl["changes"]
+                                  _over_n = int((_cg["결과"] == "바꿈").sum()) if len(_cg) else 0
+                                  _fill_n = (len(_cg) - _over_n) if len(_cg) else 0
+                                  _field_txt = ", ".join(
+                                      (f"{r['항목']}({r['지금']}→{r['파일']})"
+                                       if r["결과"] == "바꿈" else r["항목"])
+                                      for _, r in _cg.iterrows())[:480]
+                                  _vals = dict(_pl["values"])
+                                  if _vals:
+                                      # 거리·시간이 바뀌면 중복 판정 키도 다시 만듭니다
+                                      _vals["SourceKey"] = src_key(
+                                          _vals.get("WorkoutDate", _m["row"].get("WorkoutDate")),
+                                          _vals.get("DistanceKm",
+                                                    _m["row"].get("DistanceKm")),
+                                          _vals.get("DurationMinutes",
+                                                    _m["row"].get("DurationMinutes")))
+                                      db.update_row("Workouts", "WorkoutID", _wid, _vals)
+                                  if _mode == "빈 칸만 채우기":
+                                      _filled += 1
+                                  else:
+                                      _repl += 1
 
-                            # ── 랩 ────────────────────────────────────────
-                            # 예전에 랩 CSV로 넣어 둔 훈련은 랩이 이미 있습니다.
-                            # 그냥 두면 접지·수직진동 같은 칸이 빈 채로 남아서
-                            # '.fit 으로 채웠는데 왜 지표가 적지?' 가 됩니다.
-                            _L = _rr["laps"]
-                            _lap_note = ""
-                            if _L is not None and len(_L):
-                                _L = _L.drop(columns=["_trigger"], errors="ignore").copy()
-                                _L["WorkoutDate"] = _w["WorkoutDate"]
-                                _L["WorkoutType"] = _wtype
-                                _L.insert(0, "WorkoutID", _wid)
-                                _L.insert(0, "LapID", [f"LAP-{_wid[-8:]}-{j+1:02d}"
-                                                       for j in range(len(_L))])
-                                _Lo = db.load_data("Laps")
-                                _old_lap = (_Lo[_Lo["WorkoutID"].astype(str) == _wid]
-                                            if not _Lo.empty else pd.DataFrame())
-                                if _old_lap.empty:
-                                    db.append_rows("Laps", _L)
-                                    _lap_note = f"랩 {len(_L)}개 추가"
-                                elif _mode == "시계 값으로 교체" or len(_old_lap) != len(_L):
-                                    # 개수가 다르면 구간 구성 자체가 다른 것 —
-                                    # 시계 쪽이 맞으니 통째로 바꿉니다
-                                    db.delete_rows_by("Laps", "WorkoutID", _wid)
-                                    db.append_rows("Laps", _L)
-                                    _lap_note = f"랩 {len(_old_lap)}개 → {len(_L)}개 교체"
-                                else:
-                                    # 개수가 같으면 줄마다 빈 칸만 채웁니다
-                                    _lf = 0
-                                    for _j, (_, _nl) in enumerate(_L.iterrows()):
-                                        _or = _old_lap.iloc[_j]
-                                        _put = {}
-                                        for _c in _L.columns:
-                                            if _c in ("LapID", "WorkoutID"):
-                                                continue
-                                            if (ana._fit_blank(_or.get(_c, ""))
-                                                    and not ana._fit_blank(_nl[_c])):
-                                                _put[_c] = _nl[_c]
-                                        if _put:
-                                            db.update_row("Laps", "LapID",
-                                                          _or["LapID"], _put)
-                                            _lf += len(_put)
-                                    _lap_note = (f"랩 {len(_L)}개 빈 칸 {_lf}개 채움"
-                                                 if _lf else "랩 그대로")
-                            _logs.append({
-                                "LogID": new_id("IL"),
-                                "LoggedAt": now_local().strftime("%Y-%m-%d %H:%M"),
-                                "Target": f"{_w['WorkoutDate']} · {_w['DistanceKm']:.2f}km",
-                                "Mode": _mode, "Filled": _fill_n, "Overwritten": _over_n,
-                                "Laps": _lap_note,
-                                "Fields": _field_txt,
-                                "Source": _r.get("name", "")})
+                              # ── 랩 ────────────────────────────────────────
+                              # 예전에 랩 CSV로 넣어 둔 훈련은 랩이 이미 있습니다.
+                              # 그냥 두면 접지·수직진동 같은 칸이 빈 채로 남아서
+                              # '.fit 으로 채웠는데 왜 지표가 적지?' 가 됩니다.
+                              _L = _rr["laps"]
+                              _lap_note = ""
+                              if _L is not None and len(_L):
+                                  _L = _L.drop(columns=["_trigger"], errors="ignore").copy()
+                                  _L["WorkoutDate"] = _w["WorkoutDate"]
+                                  _L["WorkoutType"] = _wtype
+                                  _L.insert(0, "WorkoutID", _wid)
+                                  _L.insert(0, "LapID", [f"LAP-{_wid[-8:]}-{j+1:02d}"
+                                                         for j in range(len(_L))])
+                                  _Lo = db.load_data("Laps")
+                                  _old_lap = (_Lo[_Lo["WorkoutID"].astype(str) == _wid]
+                                              if not _Lo.empty else pd.DataFrame())
+                                  if _old_lap.empty:
+                                      db.append_rows("Laps", _L)
+                                      _lap_note = f"랩 {len(_L)}개 추가"
+                                  elif _mode == "시계 값으로 교체" or len(_old_lap) != len(_L):
+                                      # 개수가 다르면 구간 구성 자체가 다른 것 —
+                                      # 시계 쪽이 맞으니 통째로 바꿉니다 (호출 한 번)
+                                      db.replace_rows_by("Laps", "WorkoutID", _wid, _L)
+                                      _lap_note = f"랩 {len(_old_lap)}개 → {len(_L)}개 교체"
+                                  else:
+                                      # 개수가 같으면 **메모리에서** 빈 칸을 채운 뒤
+                                      # 한 번에 씁니다. 줄마다 쓰면 구글 시트
+                                      # 분당 한도(60회)를 금방 넘깁니다.
+                                      _mg = _old_lap.reset_index(drop=True).copy()
+                                      _nw = _L.reset_index(drop=True)
+                                      _lf = 0
+                                      for _c in _nw.columns:
+                                          if _c in ("LapID", "WorkoutID"):
+                                              continue
+                                          if _c not in _mg.columns:
+                                              _mg[_c] = ""
+                                          for _j in range(len(_mg)):
+                                              if (ana._fit_blank(_mg.at[_j, _c])
+                                                      and not ana._fit_blank(_nw.at[_j, _c])):
+                                                  _mg[_c] = _mg[_c].astype(object)
+                                                  _mg.at[_j, _c] = _nw.at[_j, _c]
+                                                  _lf += 1
+                                      if _lf:
+                                          db.replace_rows_by("Laps", "WorkoutID",
+                                                             _wid, _mg)
+                                      _lap_note = (f"랩 {len(_L)}개 빈 칸 {_lf}개 채움"
+                                                   if _lf else "랩 그대로")
+                              _logs.append({
+                                  "LogID": new_id("IL"),
+                                  "LoggedAt": now_local().strftime("%Y-%m-%d %H:%M"),
+                                  "Target": f"{_w['WorkoutDate']} · {_w['DistanceKm']:.2f}km",
+                                  "Mode": _mode, "Filled": _fill_n, "Overwritten": _over_n,
+                                  "Laps": _lap_note,
+                                  "Fields": _field_txt,
+                                  "Source": _r.get("name", "")})
+                            except db.QuotaError as _qe:
+                                # 구글 시트 분당 한도 — 여기까지는 저장됐습니다
+                                _quota = str(_qe)
 
                         _parts = [x for x in (f"{_n}건 새로 추가" if _n else "",
                                               f"{_filled}건 빈 칸 채움" if _filled else "",
                                               f"{_repl}건 교체" if _repl else "",
                                               f"{_skip}건 건너뜀" if _skip else "") if x]
+                        if _prog:
+                            _prog.empty()
                         if _logs:
-                            db.append_rows("ImportLog", pd.DataFrame(_logs))
-                        if _n or _filled or _repl:
+                            try:
+                                db.append_rows("ImportLog", pd.DataFrame(_logs))
+                            except Exception:                  # noqa: BLE001
+                                pass
+                        if _quota:
+                            st.error(
+                                "⏳ **구글 시트 분당 호출 한도에 걸렸습니다.** "
+                                f"여기까지는 저장됐습니다 — {' · '.join(_parts) or '없음'}. "
+                                "1분쯤 기다렸다가 **남은 파일만 다시 올려** 주세요. "
+                                "이미 들어간 건 ‘건너뛰기’나 ‘빈 칸 채우기’로 잡히니 "
+                                "겹쳐도 괜찮습니다.  \n"
+                                "한 번에 **10건 이하**로 나눠 올리시면 안 걸립니다.")
+                        elif _n or _filled or _repl:
                             flash(" · ".join(_parts))
                             st.rerun()
                         else:
