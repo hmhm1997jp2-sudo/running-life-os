@@ -18,6 +18,7 @@ app.py 에서:
 from __future__ import annotations
 
 import re
+import sys
 import unicodedata
 
 import streamlit as st
@@ -420,6 +421,12 @@ div[data-testid="stHorizontalBlock"] { gap:.55rem !important; }
 [class*="st-key-rlrow_histnav"] div[data-testid="stHorizontalBlock"]
   > div[data-testid="stColumn"]:last-child { flex:0 0 46px !important; }
 [class*="st-key-rlrow"] .stButton>button { padding:0 !important; }
+/* 한 줄에 둘 이상 들어가면 칸이 좁습니다 — 숫자 입력의 +/− 단추를 숨겨
+   입력칸이 폭을 다 쓰게 합니다. 모바일에서는 어차피 키보드로 칩니다. */
+[class*="st-key-rlrow"] [data-testid="stNumberInputStepUp"],
+[class*="st-key-rlrow"] [data-testid="stNumberInputStepDown"] { display:none !important; }
+/* 좁은 칸에서 라벨이 두 줄로 접히면 높이가 어긋납니다 — 글자만 살짝 줄입니다 */
+[class*="st-key-rlrow_auto"] [data-testid="stWidgetLabel"] p { font-size:.78rem; }
 
 /* 손가락 타깃 */
 .stTabs [data-baseweb="tab"] { height:44px; font-size:.85rem; padding:0 13px; }
@@ -436,11 +443,46 @@ div[data-testid="stHorizontalBlock"] { gap:.55rem !important; }
 """
 
 
+_NAV = """
+<style>
+/* ── 이동 줄 (세그먼트 두 줄) ────────────────────────────────────────────
+   탭처럼 보이되 탭이 아닙니다 — 고른 화면만 실행됩니다. 위 줄이 큰 구역,
+   아래 줄이 그 안의 화면입니다. 둘을 굵기와 색으로 구분해 둡니다. */
+[data-testid="stButtonGroup"] { margin-bottom:.15rem; }
+[data-testid="stButtonGroup"] [role="radiogroup"] { flex-wrap:wrap; gap:.25rem; }
+[data-testid="stButtonGroup"] button[data-variant="segmented_control"] {
+  border-radius:9px; font-weight:600;
+}
+/* 위 줄(큰 구역)은 조금 크게, 아래 줄(화면)은 조금 작게 */
+[class*="st-key-rlnav-nav_sec"] button[data-variant="segmented_control"] {
+  font-size:.92rem; padding-top:.42rem; padding-bottom:.42rem;
+}
+[class*="st-key-rlnav-nav_scr"] button[data-variant="segmented_control"] {
+  font-size:.82rem;
+}
+[class*="st-key-rlnav-nav_scr"] { margin-bottom:.5rem; }
+
+/* 카드 아래 '자세히 →' — 버튼이지만 링크처럼 보이게 */
+[class*="st-key-rl-cardlink"] .stButton > button {
+  background:transparent !important; border:none !important;
+  box-shadow:none !important; color:var(--text-3) !important;
+  font-size:.78rem !important; font-weight:500 !important;
+  justify-content:flex-end !important; padding:2px 2px !important;
+  min-height:0 !important; text-align:right !important;
+}
+[class*="st-key-rl-cardlink"] .stButton > button:hover {
+  color:var(--text) !important; background:transparent !important;
+}
+</style>
+"""
+
+
 def _inject_css(mode: str, theme: str) -> None:
     css = (_BASE.replace("__FONT__", _FONT)
                 .replace("__TOKENS__", _DARK if theme == "dark" else _LIGHT))
     st.markdown(css, unsafe_allow_html=True)
     st.markdown(_MOBILE if mode == "mobile" else _PC, unsafe_allow_html=True)
+    st.markdown(_NAV, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -608,10 +650,21 @@ def chart_height(pc: int = 280, mobile: int = 210) -> int:
 
 def cols(n_pc: int, n_mobile: int = 1, keep_row: bool = False):
     """PC/모바일 컬럼 수 분기.
-    모바일에서는 Streamlit이 좁은 컬럼을 자동으로 세로 스택하므로 항상 n_mobile을 씁니다.
-    나란히 두어야 하는 수치는 metrics() 그리드를 사용하세요.
+    모바일에서는 Streamlit이 좁은 컬럼을 **자동으로 세로 스택**합니다. 그래서
+    n_mobile을 2로 줘도 그냥 두면 한 칸씩 내려갑니다 — keep_row=True 로 부르면
+    st-key-rlrow 컨테이너로 감싸서(ui.py의 모바일 CSS) 한 줄을 유지합니다.
+    나란히 두어야 하는 '수치 표시'는 metrics() 그리드를 쓰세요.
     호출부의 c[i % len(c)] 패턴 덕분에 항목이 남으면 같은 컬럼에 이어 쌓입니다."""
-    return st.columns(n_mobile if is_mobile() else n_pc)
+    n = n_mobile if is_mobile() else n_pc
+    if keep_row and n > 1 and is_mobile():
+        # 키는 호출한 줄 번호로 만듭니다 — 재실행해도 같은 키가 나와야 합니다
+        try:
+            line = sys._getframe(1).f_lineno
+        except Exception:                                   # pragma: no cover
+            line = 0
+        with st.container(key=f"rlrow_auto{n}_{line}"):
+            return st.columns(n)
+    return st.columns(n)
 
 
 def metrics(items, per_row_pc: int | None = None, per_row_mobile: int = 2) -> None:
