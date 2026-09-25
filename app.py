@@ -44,7 +44,7 @@ _REQUIRED = {
                            "INJURY_CAUSES", "prepare_injury", "active_injuries",
                            "injury_alerts", "injury_spans", "injury_label",
                            "severity_meta",
-                           "add_intensity_rolling", "watch_intensity", "parse_zone_sec", "fit_match", "fit_plan", "fit_read", "fit_rescale", "fit_type_hint",
+                           "add_intensity_rolling", "watch_intensity", "parse_zone_sec", "fit_unpack", "fit_match", "fit_plan", "fit_read", "fit_rescale", "fit_type_hint",
                            "FIT_BENEFIT", "decoupling_verdict",
                            "age_from_birth", "assign_zones", "body_available",
                            "body_summary", "bpm_to_pct", "build_alerts",
@@ -78,7 +78,7 @@ _REQUIRED = {
                           "pill", "rows", "tiles"]),
     "db.py":        (db, ["append_rows", "backend_name", "diagnose", "export_excel_bytes",
                           "get_athlete", "init_db", "load_data", "repair", "repair_preview",
-                          "reset_db", "restore_excel", "restore_preview", "read_backup", "save_athlete", "update_row", "delete_row", "upsert_row", "write_sheet"]),
+                          "delete_rows_by", "reset_db", "restore_excel", "restore_preview", "read_backup", "save_athlete", "update_row", "delete_row", "upsert_row", "write_sheet"]),
 }
 _stale = [(f, [a for a in attrs if not hasattr(m, a)]) for f, (m, attrs) in _REQUIRED.items()
           if [a for a in attrs if not hasattr(m, a)]]
@@ -640,6 +640,10 @@ VDOT_HELP = """
 **VDOT은 추세 지표가 아닙니다.** 가민 VO₂max처럼 매일 조금씩 움직이는 값이 아니라,
 **최대노력 기록 한 건**을 Daniels & Gilbert 공식에 넣어 나오는 값입니다.
 기준 기록이 그대로면 VDOT도 그대로입니다.
+
+**트레드밀 기록은 후보에서 빠집니다.** 러닝머신 거리는 기계가 벨트 속도로
+환산한 값이라 기계마다 다릅니다 — 같은 다리로 같은 시간을 달려도 거리가
+달라지니 기록으로 쓸 수 없습니다.
 
 **몇 주째 안 바뀐다면 둘 중 하나입니다**
 
@@ -1226,6 +1230,12 @@ def gauge_svg(score, bands, center_sub: str = "", unit: str = "",
         f"</svg></div>")
 
 
+def _fmt_num(v, nd: int = 0) -> str:
+    """숫자 한 개를 보기 좋게 — 값이 없으면 —"""
+    f = fnum(v, float("nan"))
+    return f"{f:,.{nd}f}" if np.isfinite(f) else "—"
+
+
 _LINK_N = [0]
 
 
@@ -1615,7 +1625,7 @@ SEC_LABEL = {"today": ("🏠 오늘", "🏠 오늘"), "train": ("🏃 훈련", "
 # 화면: (키, PC 이름, 모바일 이름)
 SCREENS = {
     "today": [("summary", "🏠 요약", "🏠 요약"),
-              ("morning", "⌚ 아침 입력", "⌚ 아침")],
+              ("morning", "⌚ 가민 입력", "⌚ 입력")],
     "train": [("hist", "📋 훈련 이력", "📋 이력"),
               ("new", "➕ 훈련 입력", "➕ 입력"),
               ("imp", "📥 파일 가져오기", "📥 파일")],
@@ -1849,7 +1859,7 @@ if SEC == "today" and SCR == "summary":
             _miss = [f for f in _factors if f["state"] == "—"]
             if _miss:
                 st.caption(f"‘—’ {len(_miss)}개는 아직 안 넣은 항목입니다 — "
-                           "‘🏠 오늘 → ⌚ 아침 입력’에서 채우면 시계 화면과 "
+                           "‘🏠 오늘 → ⌚ 가민 입력’에서 채우면 시계 화면과 "
                            "똑같아집니다.")
     with _top[1 % len(_top)]:
         with ui.card("alerts"):
@@ -2052,7 +2062,7 @@ if SEC == "today" and SCR == "summary":
             ], per_row_pc=2)
             if any(gage(k) is not None and gage(k) >= 1 for k in _cond_keys):
                 st.caption("⚠️ 컨디션 값은 **그날 아침** 기준입니다. 날짜가 지난 값은 오늘 상태가 "
-                           "아니니, ‘🏠 오늘 → ⌚ 아침 입력’에서 오늘 값을 넣어주세요.")
+                           "아니니, ‘🏠 오늘 → ⌚ 가민 입력’에서 오늘 값을 넣어주세요.")
             st.caption("타일 안의 작은 선은 **최근 30회 입력분**입니다 (마우스를 올리면 날짜별 값).")
             card_link("📈 추이 · ⌚ 가민 추이", go=("trend", "garmin"))
 
@@ -2375,23 +2385,31 @@ if SEC == "today" and SCR == "summary":
 if SEC == "today":
     if SCR == "morning":
         with ui.card("gdaily"):
-            ui.head("⌚ 가민 일일 지표", "Garmin Connect에서 보고 그대로 옮겨 적으세요")
-            st.caption("가민 ‘트레이닝 준비 상태’ 화면을 그대로 옮겨 적고, 그 화면 "
-                       "왼쪽 위의 **‘…에 업데이트됨’ 시각**을 `기준 시간`에 적으면 "
-                       "됩니다. 훈련마다 붙는 **운동 부하**는 여기가 아니라 "
-                       "‘➕ 훈련 입력 / 📥 파일 가져오기’에서 넣습니다.")
-            # 하루에 두 번 넣게 되는 경우가 있습니다 — 아침에 적어 두고, 오후에
-            # 훈련을 하면 **회복 시간과 단기 부하만** 달라집니다. 그때 폼 전체를
-            # 다시 채우게 하면 아침에 적은 값을 덮어쓸 위험만 커집니다.
+            ui.head("⌚ 가민 일일 지표",
+                    "Garmin Connect에서 보고 그대로 옮겨 적으세요 — "
+                    "<b>아침에 한 번, 훈련 뒤에 한 번</b>")
+            # 고르는 칸을 맨 위에 둡니다 — 설명 아래에 숨겨 두면 '훈련 뒤'가
+            # 있다는 걸 모르고 지나칩니다.
             _when = st.radio(
                 "언제 넣나요", ["🌅 아침 (전체)", "🏃 훈련 뒤 (바뀐 것만)"],
                 horizontal=True, key="am_when", label_visibility="collapsed")
             _pm = _when.startswith("🏃")
+            if not _pm:
+                st.caption("가민 ‘트레이닝 준비 상태’ 화면을 그대로 옮겨 적고, 그 "
+                           "화면 왼쪽 위의 **‘…에 업데이트됨’ 시각**을 `기준 시간`에 "
+                           "적으면 됩니다. 훈련마다 붙는 **운동 부하**는 여기가 "
+                           "아니라 ‘➕ 훈련 입력 / 📥 파일 가져오기’에서 넣습니다.  \n"
+                           "오후에 훈련을 하면 부하·회복·고강도가 달라집니다 — "
+                           "그때는 위에서 **‘훈련 뒤’**를 고르세요.")
             if _pm:
-                st.info("훈련을 하면 **회복 시간과 단기 부하**가 달라집니다 — 그것만 "
-                        "다시 넣으세요. 아침에 적은 Readiness·HRV·수면·안정시 심박은 "
-                        "**그대로 남습니다**(줄이 새로 생기지 않고 그 줄만 고쳐집니다). "
-                        "`기준 시간`은 **지금 가민 화면에 떠 있는 시각**으로 두세요.")
+                st.info("훈련을 하면 **단기 부하 · 회복 시간 · 고강도 분**이 "
+                        "달라집니다 — 그 셋만 다시 넣으세요. 아침에 적은 "
+                        "Readiness·Body Battery·HRV·수면·안정시 심박은 "
+                        "**그대로 남습니다** (줄이 새로 생기지 않고 그 줄만 "
+                        "고쳐집니다).  \n"
+                        "여기 `기준 시간`은 **이 값들을 본 시각**으로만 쓰입니다 — "
+                        "아침에 적어 둔 값의 시각은 따로 남아 있어서 "
+                        "덮어쓰지 않습니다.")
             with st.form("f_daily_am", clear_on_submit=True):
                 m0 = ui.cols(2, 1, keep_row=True)
                 dd_ = m0[0].date_input("날짜", today_local(), key="am_date")
@@ -2408,11 +2426,8 @@ if SEC == "today":
                 tr = hrvms = slp = rhr = 0
                 hrv = "Balanced"
                 slh = sth = "(미입력)"
-                if _pm:
-                    bb = st.number_input(
-                        "Body Battery (지금)", 0, 100, 0, key="am_bb",
-                        help="훈련을 하면 줄어듭니다. 안 봤으면 0으로 두세요.")
-                else:
+                bb = 0
+                if not _pm:
                     m1 = ui.cols(4, 2, keep_row=True)
                     tr = grid_at(m1, 0, 4).number_input(
                         "Readiness", 0, 100, 0, key="am_tr",
@@ -2460,11 +2475,12 @@ if SEC == "today":
                     help="훈련 종료부터 줄어드는 카운트다운입니다. 위 기준 시간부터 "
                          "이만큼 남았다고 보고, 대시보드에서는 ‘지금 기준 남은 시간’으로 "
                          "다시 계산해 보여줍니다.")
-                a_im = (0 if _pm else grid_at(m3, 3, 4).number_input(
+                a_im = grid_at(m3, 3, 4).number_input(
                     "고강도 분 (당일)", 0, 500, 0, key="am_im",
-                    help="**어제 하루치**를 넣으세요. 주간 누적은 이 값을 7일 굴려 "
-                         "앱이 계산합니다 — 가민의 주간 값은 롤링 7일이라 매일 "
-                         "달라져서, 그걸 받아 적으면 추이가 읽히지 않습니다."))
+                    help="**그날 하루치**입니다 — 훈련을 하면 늘어나니 훈련 뒤에 "
+                         "다시 넣으면 됩니다. 주간 누적은 이 값을 7일 굴려 앱이 "
+                         "계산합니다 (가민의 주간 값은 롤링 7일이라 매일 달라져서, "
+                         "그걸 받아 적으면 추이가 읽히지 않습니다).")
                 _ts_opts = ["(그대로 두기)"] + list(ana.TRAINING_STATUS.keys())
                 ts = st.selectbox(
                     "Training Status", _ts_opts,
@@ -2480,22 +2496,26 @@ if SEC == "today":
                     _am_until = ((_at + timedelta(hours=float(a_rec))).strftime(
                         "%Y-%m-%d %H:%M") if a_rec else "")
                     # 움직이는 값 — 아침이든 훈련 뒤든 항상 보냅니다
+                    _stamp = f"{_at:%Y-%m-%d %H:%M} (가민 업데이트 기준)"
                     _vals = {
                         "StatusID": new_id("DS"),
                         "EntryKind": "훈련 뒤" if _pm else "아침",
+                        # 부하·회복·고강도는 '이 시각에 본 값'입니다.
+                        # 아침에 적은 Readiness 의 시각과 섞이면 안 됩니다.
+                        "LoadMeasuredAt": _stamp,
                         "TrainingStatus": "" if ts == "(그대로 두기)" else ts,
-                        "BodyBattery": bb or "",
                         "AcuteLoad": a_ac or "", "ChronicLoad": a_ch or "",
                         "LoadRatio": a_lr or "",
                         "RecoveryTimeHr": a_rec or "",
                         "IntensityMinutesDay": a_im or "",
                         "RecoveryUntil": _am_until,
-                        "Notes": nt,
-                        "MeasuredAt": f"{_at:%Y-%m-%d %H:%M} (가민 업데이트 기준)"}
+                        "Notes": nt}
                     if not _pm:
+                        # 아침에만 '그날 고정' 값들의 관측 시각을 적습니다
+                        _vals["MeasuredAt"] = _stamp
                         # 밤사이 확정되는 값 — 아침에만 보냅니다
                         _vals.update({
-                            "TrainingReadiness": tr or "",
+                            "TrainingReadiness": tr or "", "BodyBattery": bb or "",
                             "HRVStatus": hrv, "HRVms": hrvms or "",
                             "SleepScore": slp or "", "RestingHR": rhr or "",
                             "SleepHistory": "" if slh == "(미입력)" else slh,
@@ -3370,9 +3390,10 @@ if SEC == "train":
                     "시계가 직접 쓴 원본입니다 — <b>눈으로 옮겨 적을 게 "
                     "거의 없습니다</b>")
             st.caption("받는 곳: **Garmin Connect 웹 → 활동 하나 열기 → "
-                       "우상단 ⚙ → 원본 파일 내보내기** → 받은 zip 안의 "
-                       "`*_ACTIVITY.fit`. 여러 개를 한 번에 올려도 됩니다.")
-            fups = st.file_uploader("fit 파일", type=["fit"], key="fitup",
+                       "우상단 ⚙ → 원본 파일 내보내기**. 받은 **zip을 그대로** "
+                       "올리면 됩니다 — 풀 필요 없습니다. 안의 `.fit`을 알아서 "
+                       "꺼냅니다. 여러 개를 한 번에 올려도 됩니다.")
+            fups = st.file_uploader("fit 파일", type=["fit", "zip"], key="fitup",
                                     accept_multiple_files=True,
                                     label_visibility="collapsed")
             if not fups:
@@ -3386,15 +3407,22 @@ if SEC == "train":
                     ("1초 기록으로 계산", "심박 디커플링 · 전후반 폼 변화"),
                     ("안 들어오는 것",
                      "Readiness · Body Battery · HRV · 수면 — 활동 파일에 "
-                     "없습니다. ‘🏠 오늘 → ⌚ 아침 입력’에서 넣으세요."),
+                     "없습니다. ‘🏠 오늘 → ⌚ 가민 입력’에서 넣으세요."),
                 ])
             else:
                 _fres, _ferr = [], []
                 for _f in fups:
                     try:
-                        _fres.append(ana.fit_read(_f.getvalue(), _f.name))
+                        # zip 이면 안의 .fit 을 전부 꺼냅니다
+                        _parts = ana.fit_unpack(_f.name, _f.getvalue())
                     except Exception as _e:                # noqa: BLE001
                         _ferr.append(f"{_f.name} — {_e}")
+                        continue
+                    for _nm, _by in _parts:
+                        try:
+                            _fres.append(ana.fit_read(_by, _nm))
+                        except Exception as _e:            # noqa: BLE001
+                            _ferr.append(f"{_nm} — {_e}")
                 for _m in _ferr:
                     st.error(_m)
                 _fres = [r for r in _fres if r.get("workout", {}).get("WorkoutDate")]
@@ -3475,8 +3503,25 @@ if SEC == "train":
                                     "fill" if _mode == "빈 칸만 채우기" else "replace",
                                     wtype=str(_row["유형"]))
                                 _cg = _pl["changes"]
+                                _Lp = db.load_data("Laps")
+                                _no = (len(_Lp[_Lp["WorkoutID"].astype(str)
+                                               == str(_m["row"]["WorkoutID"])])
+                                       if not _Lp.empty else 0)
+                                _nn = len(_r["laps"])
+                                if _nn:
+                                    if _no == 0:
+                                        _lm = f"랩 {_nn}개가 새로 들어갑니다"
+                                    elif _mode == "시계 값으로 교체" or _no != _nn:
+                                        _lm = (f"랩 {_no}개 → **{_nn}개로 "
+                                               f"교체**됩니다 (구간 구성이 다릅니다)"
+                                               if _no != _nn else
+                                               f"랩 {_nn}개가 시계 값으로 교체됩니다")
+                                    else:
+                                        _lm = (f"랩 {_nn}개의 **빈 칸만** 채웁니다 "
+                                               "(접지·수직진동 등)")
+                                    st.caption("🏁 " + _lm)
                                 if _cg.empty:
-                                    st.caption("바뀌는 칸이 없습니다.")
+                                    st.caption("훈련 줄에서 바뀌는 칸은 없습니다.")
                                 else:
                                     _nch = int((_cg["결과"] == "바꿈").sum())
                                     st.markdown(
@@ -3493,11 +3538,39 @@ if SEC == "train":
                                 st.markdown(
                                     ui.pill(f"심박 디커플링 {_d:+.1f}% — {_v}", _t),
                                     unsafe_allow_html=True)
+                            # 전체 값을 먼저 보여 줍니다 — 아래 '반으로 나눈 값'과
+                            # 헷갈리지 않게, 그리고 Connect 화면과 바로 견주도록
+                            ui.rows([
+                                ("이 훈련 전체 · 평균 심박",
+                                 f"{_fmt_num(_w.get('AvgHeartRate'))} bpm"),
+                                ("이 훈련 전체 · 보폭",
+                                 f"{_fmt_num(_w.get('AvgStrideM'), 3)} m"),
+                                ("이 훈련 전체 · 케이던스",
+                                 f"{_fmt_num(_w.get('AvgCadence'))} spm"),
+                                ("이 훈련 전체 · 접지 시간",
+                                 f"{_fmt_num(_w.get('AvgGCTms'), 1)} ms"),
+                            ])
                             if _r["form"]:
-                                st.markdown("<p class='rl-sub' style='margin:10px 0 2px'>"
-                                            "전반 → 후반</p>", unsafe_allow_html=True)
-                                ui.rows([(_k, f"{_a:,.1f} → {_b:,.1f}")
-                                         for _k, (_a, _b) in _r["form"].items()])
+                                # 이 칸을 '이 훈련의 값'으로 읽기 쉬워서, 훈련을
+                                # 반으로 나눈 값이라는 걸 못 박아 둡니다.
+                                st.markdown(
+                                    "<p class='rl-sub' style='margin:12px 0 2px'>"
+                                    "⏱️ <b>훈련을 반으로 나눠 본 값</b> — "
+                                    "앞 절반 평균 → 뒤 절반 평균 (괄호는 변화)<br>"
+                                    "<span style='opacity:.8'>이 훈련의 "
+                                    "<b>전체 평균이 아닙니다</b> — 전체 값은 위 "
+                                    "표의 ‘심박·부하’ 칸에 있습니다.</span></p>",
+                                    unsafe_allow_html=True)
+                                _fr = []
+                                for _k, (_a, _b) in _r["form"].items():
+                                    _dv = _b - _a
+                                    _pc = (_dv / _a * 100) if _a else 0.0
+                                    _fr.append((
+                                        _k,
+                                        f"앞 {_a:,.1f} → 뒤 {_b:,.1f} "
+                                        f"<span style='opacity:.7'>({_dv:+,.1f} · "
+                                        f"{_pc:+.1f}%)</span>"))
+                                ui.rows(_fr)
                             if len(_r["laps"]):
                                 st.dataframe(
                                     _r["laps"].drop(columns=["_trigger"], errors="ignore"),
@@ -3558,6 +3631,7 @@ if SEC == "train":
                     if st.button(f"💾 적용 — {_blabel}", width="stretch",
                                  type="primary", key="fitsave"):
                         _n = _filled = _repl = _skip = 0
+                        _logs = []
                         for _i, _r in enumerate(_fres):
                             _row = _fed.iloc[_i]
                             _mode = str(_row["처리"])
@@ -3569,6 +3643,8 @@ if SEC == "train":
                             _m = _match[_i]
                             _wtype = str(_row["유형"])
 
+                            _fill_n = _over_n = 0
+                            _field_txt = ""
                             if _mode == "새로 추가":
                                 _wid = new_id("WO")
                                 _out = {kk: vv for kk, vv in _w.items()
@@ -3582,6 +3658,7 @@ if SEC == "train":
                                                          _w["DurationMinutes"])})
                                 db.append_rows("Workouts", pd.DataFrame([_out]))
                                 _n += 1
+                                _field_txt = "새 훈련"
                             else:
                                 if _m["row"] is None:
                                     _skip += 1
@@ -3591,6 +3668,13 @@ if SEC == "train":
                                     _w, _m["row"],
                                     "fill" if _mode == "빈 칸만 채우기" else "replace",
                                     wtype=_wtype)
+                                _cg = _pl["changes"]
+                                _over_n = int((_cg["결과"] == "바꿈").sum()) if len(_cg) else 0
+                                _fill_n = (len(_cg) - _over_n) if len(_cg) else 0
+                                _field_txt = ", ".join(
+                                    (f"{r['항목']}({r['지금']}→{r['파일']})"
+                                     if r["결과"] == "바꿈" else r["항목"])
+                                    for _, r in _cg.iterrows())[:480]
                                 _vals = dict(_pl["values"])
                                 if _vals:
                                     # 거리·시간이 바뀌면 중복 판정 키도 다시 만듭니다
@@ -3606,30 +3690,101 @@ if SEC == "train":
                                 else:
                                     _repl += 1
 
-                            # 랩 — 이미 있으면 건드리지 않습니다
-                            _Lo = db.load_data("Laps")
-                            _has = (not _Lo.empty
-                                    and (_Lo["WorkoutID"].astype(str) == _wid).any())
+                            # ── 랩 ────────────────────────────────────────
+                            # 예전에 랩 CSV로 넣어 둔 훈련은 랩이 이미 있습니다.
+                            # 그냥 두면 접지·수직진동 같은 칸이 빈 채로 남아서
+                            # '.fit 으로 채웠는데 왜 지표가 적지?' 가 됩니다.
                             _L = _rr["laps"]
-                            if not _has and _L is not None and len(_L):
+                            _lap_note = ""
+                            if _L is not None and len(_L):
                                 _L = _L.drop(columns=["_trigger"], errors="ignore").copy()
                                 _L["WorkoutDate"] = _w["WorkoutDate"]
                                 _L["WorkoutType"] = _wtype
                                 _L.insert(0, "WorkoutID", _wid)
                                 _L.insert(0, "LapID", [f"LAP-{_wid[-8:]}-{j+1:02d}"
                                                        for j in range(len(_L))])
-                                db.append_rows("Laps", _L)
+                                _Lo = db.load_data("Laps")
+                                _old_lap = (_Lo[_Lo["WorkoutID"].astype(str) == _wid]
+                                            if not _Lo.empty else pd.DataFrame())
+                                if _old_lap.empty:
+                                    db.append_rows("Laps", _L)
+                                    _lap_note = f"랩 {len(_L)}개 추가"
+                                elif _mode == "시계 값으로 교체" or len(_old_lap) != len(_L):
+                                    # 개수가 다르면 구간 구성 자체가 다른 것 —
+                                    # 시계 쪽이 맞으니 통째로 바꿉니다
+                                    db.delete_rows_by("Laps", "WorkoutID", _wid)
+                                    db.append_rows("Laps", _L)
+                                    _lap_note = f"랩 {len(_old_lap)}개 → {len(_L)}개 교체"
+                                else:
+                                    # 개수가 같으면 줄마다 빈 칸만 채웁니다
+                                    _lf = 0
+                                    for _j, (_, _nl) in enumerate(_L.iterrows()):
+                                        _or = _old_lap.iloc[_j]
+                                        _put = {}
+                                        for _c in _L.columns:
+                                            if _c in ("LapID", "WorkoutID"):
+                                                continue
+                                            if (ana._fit_blank(_or.get(_c, ""))
+                                                    and not ana._fit_blank(_nl[_c])):
+                                                _put[_c] = _nl[_c]
+                                        if _put:
+                                            db.update_row("Laps", "LapID",
+                                                          _or["LapID"], _put)
+                                            _lf += len(_put)
+                                    _lap_note = (f"랩 {len(_L)}개 빈 칸 {_lf}개 채움"
+                                                 if _lf else "랩 그대로")
+                            _logs.append({
+                                "LogID": new_id("IL"),
+                                "LoggedAt": now_local().strftime("%Y-%m-%d %H:%M"),
+                                "Target": f"{_w['WorkoutDate']} · {_w['DistanceKm']:.2f}km",
+                                "Mode": _mode, "Filled": _fill_n, "Overwritten": _over_n,
+                                "Laps": _lap_note,
+                                "Fields": _field_txt,
+                                "Source": _r.get("name", "")})
 
                         _parts = [x for x in (f"{_n}건 새로 추가" if _n else "",
                                               f"{_filled}건 빈 칸 채움" if _filled else "",
                                               f"{_repl}건 교체" if _repl else "",
                                               f"{_skip}건 건너뜀" if _skip else "") if x]
+                        if _logs:
+                            db.append_rows("ImportLog", pd.DataFrame(_logs))
                         if _n or _filled or _repl:
                             flash(" · ".join(_parts))
                             st.rerun()
                         else:
                             st.warning("적용할 것이 없습니다. " + " · ".join(_parts))
 
+
+        # ── 가져오기 기록 — 적용한 뒤에 '무엇이 바뀌었나'를 볼 데 ────────
+        _ilog = db.load_data("ImportLog")
+        if not _ilog.empty:
+            with ui.card("implog"):
+                ui.head("🧾 가져오기 기록",
+                        "언제 · 무엇을 · 몇 칸이나 바꿨는지 — 최근 것부터")
+                _iv = _ilog.tail(40).iloc[::-1].copy()
+                st.dataframe(
+                    pd.DataFrame({
+                        "시각": _iv["LoggedAt"],
+                        "대상 훈련": _iv["Target"],
+                        "처리": _iv["Mode"],
+                        "채운 칸": pd.to_numeric(_iv["Filled"], errors="coerce")
+                                  .fillna(0).astype(int),
+                        "덮어쓴 칸": pd.to_numeric(_iv["Overwritten"], errors="coerce")
+                                    .fillna(0).astype(int),
+                        "랩": _iv["Laps"],
+                        "파일": _iv["Source"],
+                    }), hide_index=True, width="stretch")
+                with st.expander("🔎 바뀐 항목 자세히"):
+                    for _, _lr in _iv.iterrows():
+                        if not str(_lr.get("Fields") or "").strip():
+                            continue
+                        st.markdown(
+                            f"**{_lr['LoggedAt']} · {_lr['Target']}** "
+                            f"({_lr['Mode']})  \n"
+                            f"<span class='rl-sub'>{_lr['Fields']}</span>",
+                            unsafe_allow_html=True)
+                st.caption("되돌리려면 ‘⚙️ 설정 → 💾 백업 & 도구 → "
+                           "↩️ 백업에서 되돌리기’를 쓰세요.")
 
         with ui.card("imp"):
             ui.head("📥 Garmin CSV 가져오기",
@@ -4000,7 +4155,7 @@ if SEC == "trend":
                      and pd.to_numeric(gw["TrainingLoad"], errors="coerce").gt(0).any())
         _has_body = not db.load_data("Body").empty
         if gd.empty and gm.empty and not _has_load and not _has_body:
-            st.info("‘🏠 오늘 → ⌚ 아침 입력 / 📈 가민 측정’에서 값을 입력하면 여기에 추이가 그려집니다.")
+            st.info("‘🏠 오늘 → ⌚ 가민 입력 / 📈 가민 측정’에서 값을 입력하면 여기에 추이가 그려집니다.")
         else:
             with ui.card("gperiod"):
                 ui.head("📅 기간", "대시보드 타일은 최근 값만 보여줍니다 — "
@@ -4035,7 +4190,7 @@ if SEC == "trend":
                 _gbv = _clip(ana.prepare_body(db.load_data("Body")), "MeasureDate")
                 _av = ana.trend_available(gdv, gmv, _gwv, _gbv)
                 if not _av:
-                    st.caption("‘🏠 오늘 → ⌚ 아침 입력 / 📈 가민 측정’에 값을 넣으면 "
+                    st.caption("‘🏠 오늘 → ⌚ 가민 입력 / 📈 가민 측정’에 값을 넣으면 "
                                "여기에 추이가 그려집니다.")
                 else:
                     _def = [k for k in ana.TREND_DEFAULT if k in _av] or _av[:3]
@@ -4536,6 +4691,23 @@ if SEC == "trend":
                     "훈련 유형 (비우면 전체)", _types_all, default=[], key="wt_types",
                     help="하나만 고르면 ‘같은 종류의 훈련이 어떻게 변해왔나’가 되고, "
                          "비워 두면 전체 흐름이 됩니다.")
+                # 노면 — 트레드밀이 섞여 있으면 폼 지표가 통째로 튑니다
+                _surf_all = [x for x in SURFACES
+                             if (df_w.get("Surface", pd.Series(dtype=str))
+                                 .astype(str).str.strip() == x).any()]
+                _ssel = []
+                if len(_surf_all) > 1:
+                    _ssel = st.multiselect(
+                        "노면 (비우면 전체)", _surf_all, default=[], key="wt_surf",
+                        help="트레드밀은 거리가 **기계 보정값**이고, 느리게 걸으면 "
+                             "접지 시간·보폭이 도로와 아예 다른 범위로 찍힙니다. "
+                             "폼 지표를 볼 때는 ‘로드’만 골라 보세요.")
+                    if any(s == "트레드밀" for s in _surf_all) and not _ssel:
+                        _n_tm = int((df_w.get("Surface", pd.Series(dtype=str))
+                                     .astype(str).str.strip() == "트레드밀").sum())
+                        st.caption(f"⚠️ 이 목록에 **트레드밀 {_n_tm}건**이 섞여 "
+                                   "있습니다 — 접지 시간·보폭·페이스가 도로와 "
+                                   "다른 범위라 선이 튈 수 있습니다.")
                 # 보조선 설정 — 한 줄에 셋
                 _lr = ui.cols(3, 1, keep_row=True)
                 _ma_lab = _lr[0].selectbox(
@@ -4553,6 +4725,7 @@ if SEC == "trend":
                 _wt = ana.workout_trend(df_w, db.load_data("Laps"),
                                         start=_wt_s, end=_wt_e,
                                         types=_tsel or None,
+                                        surfaces=_ssel or None,
                                         ma_days=ana.MA_WINDOWS[_ma_lab])
                 _wav = ana.workout_trend_available(_wt)
                 if not _wav:
