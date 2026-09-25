@@ -385,11 +385,17 @@ div[data-testid="stAlert"] { border-radius:var(--r-md); border:1px solid var(--l
 
 _PC = """
 <style>
-.block-container { max-width:1240px; padding-left:2.4rem; padding-right:2.4rem; }
+/* PC에서 한 화면에 더 많이 — 2단 카드 그리드가 좁아지지 않게 폭을 넓힙니다.
+   (RUNALYZE처럼 숫자를 빽빽하게 보는 쪽에 맞춘 값입니다) */
+.block-container { max-width:1440px; padding-left:2.1rem; padding-right:2.1rem; }
 div[data-testid="stVerticalBlockBorderWrapper"] { padding:6px 8px; }
 div[data-testid="stMetricValue"] { font-size:1.9rem !important; }
 .stTabs [data-baseweb="tab"] { height:40px; font-size:.9rem; }
 .rl-title { font-size:1.45rem; }
+
+/* 표는 촘촘하게 — 한 화면에 몇 줄 더 들어옵니다 */
+[data-testid="stDataFrame"] { font-size:.82rem; }
+[data-testid="stDataFrame"] [role="columnheader"] { font-weight:650; }
 </style>
 """
 
