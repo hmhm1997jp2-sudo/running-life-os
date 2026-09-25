@@ -357,8 +357,13 @@ class QuotaError(RuntimeError):
     """Google Sheets 분당 호출 한도 초과."""
 
 
-def _retry(fn, *args, tries: int = 4, **kwargs):
-    """429(한도 초과) 시 잠깐 쉬었다 다시 시도."""
+# 구글 시트 한도는 **분당** 기준입니다(사용자당 읽기·쓰기 각 60회). 그래서
+# 429를 만나면 몇 초 쉬는 정도로는 부족하고, 다음 분까지 기다려야 풀립니다.
+_RETRY_WAIT = (2, 5, 12, 25, 40)
+
+
+def _retry(fn, *args, tries: int = 5, **kwargs):
+    """429(한도 초과) 시 기다렸다 다시 시도합니다. 합계 80초 남짓 버팁니다."""
     import time
     last = None
     for i in range(tries):
@@ -369,7 +374,7 @@ def _retry(fn, *args, tries: int = 4, **kwargs):
             code = getattr(getattr(e, "response", None), "status_code", None)
             if code not in (429, 500, 503):
                 raise
-            time.sleep(1.5 * (i + 1))
+            time.sleep(_RETRY_WAIT[min(i, len(_RETRY_WAIT) - 1)])
     raise QuotaError(str(last))
 
 
@@ -716,6 +721,43 @@ def delete_rows_by(sheet: str, col: str, value) -> int:
             _retry(ws.delete_rows, r)
     _bump()
     return len(hits)
+
+
+def replace_rows_by(sheet: str, col: str, value, new_df: pd.DataFrame) -> str:
+    """어떤 칸의 값이 같은 줄들을 new_df 로 통째로 바꿉니다 — **호출 한 번**에.
+
+    랩처럼 한 훈련 분량이 이어 붙어 있는 줄을 고칠 때 씁니다. 줄마다
+    update_row 를 부르면 한 줄에 API 두세 번이 나가서 13개 랩짜리 훈련
+    몇 개만 넣어도 구글 시트 분당 한도(60회)를 넘겨 버립니다.
+    """
+    cols = SCHEMA.get(sheet, list(new_df.columns))
+    if not use_gsheets() or col not in cols:
+        df = load_data(sheet)
+        keep = df[df[col].astype(str) != str(value)]
+        write_sheet(sheet, pd.concat([keep, new_df.reindex(columns=cols)],
+                                     ignore_index=True))
+        return "rewrote"
+    ws = _retry(_spreadsheet().worksheet, sheet)
+    vals = _retry(ws.col_values, cols.index(col) + 1)
+    want = str(value).strip()
+    hits = [i + 1 for i, v in enumerate(vals) if str(v).strip() == want]
+    cells = _to_cells(new_df, cols)
+    if hits and hits[-1] - hits[0] + 1 == len(hits) and len(hits) == len(cells):
+        # 줄 수가 같고 이어져 있으면 그 자리에 덮어씁니다 — 쓰기 한 번
+        _retry(ws.update, range_name=f"A{hits[0]}", values=cells,
+               value_input_option="RAW")
+        _bump()
+        return "in-place"
+    if hits:
+        if hits[-1] - hits[0] + 1 == len(hits):
+            _retry(ws.delete_rows, hits[0], hits[-1])
+        else:
+            for r in reversed(hits):
+                _retry(ws.delete_rows, r)
+    if len(cells):
+        _retry(ws.append_rows, cells, value_input_option="RAW")
+    _bump()
+    return "replaced"
 
 
 def append_rows(sheet: str, new_df: pd.DataFrame) -> None:
