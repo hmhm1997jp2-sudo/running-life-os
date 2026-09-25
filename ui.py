@@ -129,7 +129,9 @@ span[data-testid="stIconMaterial"], .material-symbols-rounded, .material-symbols
   font-family:"Material Symbols Rounded","Material Symbols Outlined" !important;
 }
 .stApp { background: var(--bg); color: var(--text); }
-#MainMenu, footer, header [data-testid="stDecoration"] { visibility:hidden; }
+/* ⋮ 메뉴(#MainMenu)는 숨기지 않습니다 — 밝게/어둡게 테마를 바꾸는 곳이
+   거기뿐이라, 숨기면 사용자가 테마를 바꿀 방법이 없어집니다. */
+footer, header [data-testid="stDecoration"] { visibility:hidden; }
 [data-testid="stToolbar"] { right:.4rem; }
 .block-container { padding-top:3.1rem; padding-bottom:5rem; }
 
@@ -397,6 +399,21 @@ _MOBILE = """
 div[data-testid="stMetricValue"] { font-size:1.5rem !important; }
 div[data-testid="stMetricLabel"] p { font-size:.66rem !important; }
 div[data-testid="stHorizontalBlock"] { gap:.55rem !important; }
+
+/* 좁은 화면에서도 한 줄로 유지할 묶음 — st.container(key="rl-row-…") 로 감싸면
+   Streamlit이 자동으로 세로로 쌓는 것을 막습니다. ◀ 날짜 ▶ 처럼 셋이 한 벌일 때
+   각각 한 줄씩 차지하면 화면의 절반을 먹어 버립니다. */
+[class*="st-key-rlrow"] div[data-testid="stHorizontalBlock"] {
+  flex-wrap:nowrap !important; gap:.4rem !important;
+}
+[class*="st-key-rlrow"] div[data-testid="stHorizontalBlock"]
+  > div[data-testid="stColumn"] { min-width:0 !important; flex:1 1 0 !important; }
+/* 화살표 칸만 좁게 — 가운데 입력칸이 남은 폭을 다 씁니다 */
+[class*="st-key-rlrow_histnav"] div[data-testid="stHorizontalBlock"]
+  > div[data-testid="stColumn"]:first-child,
+[class*="st-key-rlrow_histnav"] div[data-testid="stHorizontalBlock"]
+  > div[data-testid="stColumn"]:last-child { flex:0 0 46px !important; }
+[class*="st-key-rlrow"] .stButton>button { padding:0 !important; }
 
 /* 손가락 타깃 */
 .stTabs [data-baseweb="tab"] { height:44px; font-size:.85rem; padding:0 13px; }
