@@ -387,7 +387,19 @@ def profile_history(df_metrics: pd.DataFrame, current: dict | None = None) -> pd
 
     rows = pd.concat([pd.DataFrame([base]), rows], ignore_index=True).sort_values("Date")
     rows[PROFILE_FIELDS] = rows[PROFILE_FIELDS].ffill().bfill()
-    return rows.reset_index(drop=True)
+    rows = rows.reset_index(drop=True)
+
+    # 값이 하나도 안 바뀐 줄은 이력이 아닙니다 — ffill 뒤에 앞줄과 똑같아진
+    # 줄을 접습니다. (예전에는 저장 버튼을 누를 때마다 같은 값이 한 줄씩
+    # 쌓여서 '적용된 프로필'이 같은 숫자로 수십 줄이 됐습니다)
+    if len(rows) > 1:
+        same = (rows[PROFILE_FIELDS]
+                .round(4)
+                .eq(rows[PROFILE_FIELDS].round(4).shift())
+                .all(axis=1))
+        same.iloc[0] = False                    # 첫 줄은 항상 남깁니다
+        rows = rows[~same].reset_index(drop=True)
+    return rows
 
 
 def profile_changes(hist: pd.DataFrame) -> pd.DataFrame:
@@ -1033,6 +1045,16 @@ WORKOUT_TREND_METRICS = [
     ("ElevationGainM", "상승고도", "m", ",d", 0,
      "누적 상승. 페이스나 심박이 갑자기 나빠 보이는 날은 여기를 같이 보세요."),
 ]
+# 추세선(직선)을 그을 만한 지표 — '몇 주에 걸쳐 좋아지고 있나'를 묻는 게
+# 말이 되는 값들입니다. 거리·시간·상승고도·TE·운동 부하는 그날 어떤 훈련을
+# 했느냐(코스·계획)로 정해지는 값이라 직선을 그으면 뜻이 없습니다.
+TREND_LINE_OK = {"PaceSec", "AvgHeartRate", "EF", "Decoupling", "AvgCadence",
+                 "AvgStrideM", "AvgGCTms", "AvgVertOscCm", "AvgVertRatioPct", "RPE"}
+
+# 이동평균 창 — '몇 회'가 아니라 '며칠'로 셉니다. 훈련 빈도가 주마다 달라서
+# '4회'는 어떤 주엔 사흘치, 어떤 주엔 2주치가 됩니다.
+MA_WINDOWS = {"없음": None, "2주": 14, "4주": 28, "8주": 56, "12주": 84}
+
 WORKOUT_TREND_META = {c: (name, unit, fmt, good, desc)
                       for c, name, unit, fmt, good, desc in WORKOUT_TREND_METRICS}
 WORKOUT_TREND_LABEL = {c: (f"{name} ({unit})" if unit else name)
@@ -1041,12 +1063,18 @@ WORKOUT_TREND_DEFAULT = ["PaceSec", "AvgHeartRate", "EF", "AvgVertRatioPct"]
 
 
 def workout_trend(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
-                  days: int | None = None, types=None, ma: int = 4,
+                  days: int | None = None, types=None, ma_days: int | None = 28,
                   start=None, end=None) -> pd.DataFrame:
-    """훈련 한 건 = 한 점. 기간·유형으로 거른 뒤 지표별 이동평균까지 붙여 돌려줍니다.
+    """훈련 한 건 = 한 점. 기간·유형으로 거른 뒤 지표별 보조선을 붙여 돌려줍니다.
 
-    이동평균은 **거르고 남은 것들**을 시간순으로 계산합니다. 유형을 하나로 좁혀서
-    보면 '같은 종류의 훈련이 어떻게 변해왔나'가 되고, 섞어 보면 전체 흐름이 됩니다."""
+    붙는 열은 셋입니다.
+      <컬럼>_MA — **며칠짜리** 이동평균(기본 28일). '몇 회'로 세면 훈련 빈도가
+                  주마다 달라 어떤 주는 사흘치, 어떤 주는 2주치가 됩니다.
+      <컬럼>_AV — 이 기간 전체 평균 (가로 직선)
+      <컬럼>_TR — 이 기간의 선형 추세 (TREND_LINE_OK 에 있는 지표만)
+
+    모두 **거르고 남은 것들**로 계산합니다. 유형을 하나로 좁히면 '같은 종류의
+    훈련이 어떻게 변해왔나'가 되고, 섞어 보면 전체 흐름이 됩니다."""
     d = prepare_workouts(df_work)
     if d.empty:
         return pd.DataFrame()
@@ -1079,6 +1107,7 @@ def workout_trend(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
         d["Decoupling"] = np.nan
 
     keep = ["WorkoutDate", "WorkoutType", "WorkoutID"]
+    _days = (d["WorkoutDate"] - d["WorkoutDate"].min()).dt.total_seconds() / 86400.0
     for col, *_ in WORKOUT_TREND_METRICS:
         if col not in d.columns:
             continue
@@ -1087,9 +1116,41 @@ def workout_trend(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
         if v.notna().sum() == 0:
             continue
         d[col] = v
-        d[f"{col}_MA"] = v.rolling(max(int(ma), 2), min_periods=2).mean()
-        keep += [col, f"{col}_MA"]
+        # 날짜 기준 이동평균 — 쉬는 기간이 있어도 '최근 N일'의 뜻이 유지됩니다
+        if ma_days:
+            d[f"{col}_MA"] = (v.set_axis(d["WorkoutDate"])
+                              .rolling(f"{int(ma_days)}D", min_periods=2)
+                              .mean().to_numpy())
+        else:
+            d[f"{col}_MA"] = np.nan
+        d[f"{col}_AV"] = float(v.mean()) if v.notna().any() else np.nan
+        d[f"{col}_TR"] = np.nan
+        if col in TREND_LINE_OK:
+            m = v.notna()
+            if int(m.sum()) >= 4 and _days[m].nunique() >= 2:
+                sl, ic = np.polyfit(_days[m].to_numpy(float), v[m].to_numpy(float), 1)
+                d[f"{col}_TR"] = ic + sl * _days.to_numpy(float)
+        keep += [col, f"{col}_MA", f"{col}_AV", f"{col}_TR"]
     return d[keep].reset_index(drop=True)
+
+
+def workout_trend_stats(wt: pd.DataFrame, keys) -> dict:
+    """지표별 요약 — 평균, 이 기간 동안의 추세 변화량, 표본 수."""
+    out = {}
+    if wt is None or wt.empty:
+        return out
+    for col in keys:
+        if col not in wt.columns:
+            continue
+        v = pd.to_numeric(wt[col], errors="coerce")
+        if v.notna().sum() == 0:
+            continue
+        tr = pd.to_numeric(wt.get(f"{col}_TR"), errors="coerce")
+        chg = (float(tr.dropna().iloc[-1] - tr.dropna().iloc[0])
+               if tr is not None and tr.notna().sum() >= 2 else np.nan)
+        out[col] = {"mean": float(v.mean()), "n": int(v.notna().sum()),
+                    "change": chg}
+    return out
 
 
 def workout_trend_available(wt: pd.DataFrame) -> list[str]:
