@@ -1180,7 +1180,7 @@ WORKOUT_TREND_DEFAULT = ["PaceSec", "AvgHeartRate", "EF", "AvgVertRatioPct"]
 
 def workout_trend(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
                   days: int | None = None, types=None, ma_days: int | None = 28,
-                  start=None, end=None) -> pd.DataFrame:
+                  start=None, end=None, surfaces=None) -> pd.DataFrame:
     """훈련 한 건 = 한 점. 기간·유형으로 거른 뒤 지표별 보조선을 붙여 돌려줍니다.
 
     붙는 열은 셋입니다.
@@ -1206,6 +1206,11 @@ def workout_trend(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
         d = d[d["WorkoutDate"] >= cutoff]
     if types:
         d = d[d["WorkoutType"].isin(list(types))]
+    # 노면 — 트레드밀은 거리가 기계 보정값이고, 걷기에 가까운 속도로 하면
+    # 접지 시간 같은 폼 지표가 도로 달리기와 아예 다른 범위로 찍힙니다.
+    # 섞어 볼지 뺄지는 보는 사람이 정합니다.
+    if surfaces and "Surface" in d.columns:
+        d = d[d["Surface"].astype(str).str.strip().isin(list(surfaces))]
     if d.empty:
         return pd.DataFrame()
     d = d.sort_values("WorkoutDate").copy()
@@ -1533,6 +1538,15 @@ def vdot_table(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
     if d.empty:
         return pd.DataFrame()
 
+    # 트레드밀은 거리가 **기계 보정값**이라 기록으로 쓸 수 없습니다.
+    # (같은 다리로 같은 시간을 달려도 러닝머신 설정에 따라 거리가 달라집니다)
+    if "Surface" in d.columns:
+        d = d[d["Surface"].astype(str).str.strip() != "트레드밀"]
+    if d.empty:
+        return pd.DataFrame()
+    if df_laps is not None and not df_laps.empty and "WorkoutID" in df_laps.columns:
+        df_laps = df_laps[df_laps["WorkoutID"].astype(str)
+                          .isin(set(d["WorkoutID"].astype(str)))]
     prs = detect_prs(d, df_laps=df_laps)
     if prs.empty:
         return pd.DataFrame()
@@ -1763,17 +1777,35 @@ def parse_time_str(s) -> float:
     return np.nan
 
 
-def _measured_ts(df: pd.DataFrame, date_col: str) -> pd.Series:
+# 훈련을 하면 하루 중에 달라지는 값들 — '언제 본 값인가'를 따로 셉니다.
+# (부하가 오르고 회복 카운트다운이 다시 시작되고 고강도 분이 쌓입니다)
+# Body Battery 는 뺐습니다 — 기상 직후가 그날 최고값이라 아침에 본 것이
+# 그날의 값입니다. 훈련 뒤에 다시 볼 이유가 없습니다.
+MOVING_FIELDS = {"AcuteLoad", "ChronicLoad", "LoadRatio", "RecoveryTimeHr",
+                 "RecoveryUntil", "IntensityMinutesDay", "TrainingStatus"}
+
+
+def _measured_ts(df: pd.DataFrame, date_col: str, col: str = "MeasuredAt") -> pd.Series:
     """'언제 본 값인가'를 시각까지 포함해 돌려줍니다.
+
     MeasuredAt('2026-09-20 07:51 (가민 업데이트 기준)')이 있으면 그 시각을,
     없으면 그 날 00:00을 씁니다. 회복 시간을 '지금 기준 남은 시간'으로 되돌리거나,
-    같은 날 줄이 둘 이상일 때 어느 쪽이 더 나중인지 가리는 데 씁니다."""
+    같은 날 줄이 둘 이상일 때 어느 쪽이 더 나중인지 가리는 데 씁니다.
+    부하·회복처럼 훈련 뒤에 다시 넣는 값은 col="LoadMeasuredAt" 을 씁니다 —
+    아침에 본 Readiness 까지 저녁 시각으로 적히면 안 되니까요.
+    """
     base = pd.to_datetime(df[date_col], errors="coerce")
-    if "MeasuredAt" not in df.columns:
+    use = col if col in df.columns else "MeasuredAt"
+    if use not in df.columns:
         return base
-    txt = df["MeasuredAt"].astype(str).str.extract(
-        r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})", expand=False)
-    exact = pd.to_datetime(txt, errors="coerce")
+    pat = r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})"
+    exact = pd.to_datetime(
+        df[use].astype(str).str.extract(pat, expand=False), errors="coerce")
+    if use != "MeasuredAt" and "MeasuredAt" in df.columns:
+        # 훈련 뒤 시각이 없으면 아침 시각으로 채웁니다 (예전 줄 호환)
+        exact = exact.fillna(pd.to_datetime(
+            df["MeasuredAt"].astype(str).str.extract(pat, expand=False),
+            errors="coerce"))
     return exact.fillna(base)
 
 
@@ -1851,7 +1883,9 @@ def _latest(df: pd.DataFrame, date_col: str, field: str):
     if df is None or df.empty or field not in df.columns:
         return None, None, None
     d = df.copy()
-    d["_ts"] = _measured_ts(d, date_col)
+    d["_ts"] = _measured_ts(d, date_col,
+                            "LoadMeasuredAt" if field in MOVING_FIELDS
+                            else "MeasuredAt")
     d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
     d = d.dropna(subset=[date_col]).sort_values(["_ts", date_col], kind="stable")
     vals = d[field]
@@ -2896,7 +2930,12 @@ def fit_workout(msgs, offset=None) -> dict:
         "TrainingLoad": g("training_load_peak", nd=0),
         "Calories": g("total_calories"),
         "AvgGCTms": g("avg_stance_time", nd=1),
-        "AvgStrideM": g("avg_step_length", 0.001, 3),
+        # 보폭 — 파일의 avg_step_length 는 **1초마다 잰 값의 평균**이라
+        # Connect 화면의 숫자(거리 ÷ 걸음수)보다 조금 작게 나옵니다.
+        # 화면과 맞추려고 거리÷걸음수를 먼저 씁니다.
+        "AvgStrideM": (round(dist_km * 1000 / (_fit_num(ses.get("total_cycles")) * 2), 3)
+                       if (_fit_num(ses.get("total_cycles"), 0) > 0 and dist_km > 0)
+                       else g("avg_step_length", 0.001, 3)),
         "AvgVertOscCm": g("avg_vertical_oscillation", 0.1, 2),
         "AvgVertRatioPct": g("avg_vertical_ratio", nd=2),
         "NormPower": g("normalized_power"),
@@ -3247,3 +3286,54 @@ def fit_plan(w: dict, old: pd.Series, mode: str, wtype: str = "") -> dict:
         rows.append({"항목": c, "지금": ("(빈칸)" if blank else str(cur)[:24]),
                      "파일": str(new)[:24], "결과": act})
     return {"changes": pd.DataFrame(rows), "values": vals}
+
+
+FIT_UNPACK_MAX = 60      # 한 번에 너무 많이 열면 화면이 감당하지 못합니다
+
+
+def fit_unpack(name: str, data: bytes, _depth: int = 0) -> list[tuple[str, bytes]]:
+    """올린 파일에서 .fit 들을 꺼냅니다.
+
+    Garmin Connect의 ‘원본 파일 내보내기’는 **zip**으로 떨어집니다. 매번 풀어서
+    안의 .fit 만 골라 올리는 건 번거로우니, zip을 통째로 받아 여기서 풉니다.
+    계정 전체 ‘데이터 내보내기’처럼 **zip 안에 zip이 또 있는 경우**도 한 겹
+    더 들어가 찾습니다. 활동이 아닌 파일(json·csv 등)은 그냥 지나칩니다.
+    """
+    nm = str(name or "")
+    if not nm.lower().endswith(".zip"):
+        return [(nm, data)]
+    import io
+    import zipfile
+    out = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            for info in z.infolist():
+                if info.is_dir() or "__MACOSX" in info.filename:
+                    continue
+                inner = info.filename.rsplit("/", 1)[-1]
+                low = inner.lower()
+                if inner.startswith("."):
+                    continue
+                if low.endswith(".fit"):
+                    out.append((f"{nm} › {inner}", z.read(info)))
+                elif low.endswith(".zip") and _depth < 2:
+                    # 계정 전체 내보내기 — 활동 zip 이 또 들어 있습니다
+                    try:
+                        out += fit_unpack(f"{nm} › {inner}", z.read(info), _depth + 1)
+                    except RuntimeError:
+                        pass
+                if len(out) > FIT_UNPACK_MAX:
+                    break
+    except zipfile.BadZipFile as e:
+        raise RuntimeError(f"zip 파일을 열지 못했습니다 — {e}") from e
+    if not out:
+        raise RuntimeError("zip 안에 .fit 파일이 없습니다. "
+                           "Garmin Connect의 ‘원본 파일 내보내기’로 받은 zip이 "
+                           "맞는지 확인해 주세요.")
+    if len(out) > FIT_UNPACK_MAX:
+        raise RuntimeError(
+            f"이 zip 안에 활동이 너무 많습니다({FIT_UNPACK_MAX}개 넘음). "
+            "한 번에 처리하면 화면이 버티지 못하니 나눠서 올려 주세요 — "
+            "가민 계정 전체 내보내기 대신 **활동 하나씩 ‘원본 파일 "
+            "내보내기’** 로 받은 zip 을 쓰시는 걸 권합니다.")
+    return out
