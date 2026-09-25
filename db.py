@@ -69,7 +69,11 @@ SCHEMA: dict[str, list[str]] = {
                     # 맨 뒤에 추가 — 고강도 분은 '당일'로 받습니다.
                     # 주간 누적은 이 값을 7일 굴려서 앱이 계산합니다.
                     # (기존 IntensityMinutes 는 예전에 받아 적던 가민 주간 누적)
-                    "IntensityMinutesDay"],
+                    "IntensityMinutesDay",
+                    # 맨 뒤에 추가 — 부하·회복·고강도는 훈련을 하면 하루 중에도
+                    # 달라집니다. 아침에 본 시각(MeasuredAt)과 따로 적어 둬야
+                    # '언제 본 값인가'가 항목별로 맞습니다.
+                    "LoadMeasuredAt"],
     # ── 프로필·지표 변경 이력 (날짜별 스냅샷) ─────────────────────────────
     #    체중/심박/LTHR 이 바뀐 시점을 남기면 과거 훈련은 그 시점 값으로 계산됩니다.
     "Metrics": ["MetricID", "MetricDate", "HRRest", "HRMax", "VO2Max", "FitnessAge",
@@ -109,6 +113,9 @@ SCHEMA: dict[str, list[str]] = {
              # 가민 활동 상세 CSV의 나머지 랩 항목 (맨 뒤에 추가)
              "GapPaceSec", "NormPower", "AvgWkg", "MaxPower", "MaxWkg",
              "MaxPaceSec", "MaxCadence", "MovingMinutes", "MovingPaceSec"],
+    # 가져오기에서 무엇을 바꿨는지 남깁니다 — 적용 뒤에 확인할 데가 있어야 합니다
+    "ImportLog": ["LogID", "LoggedAt", "Target", "Mode", "Filled", "Overwritten",
+                  "Laps", "Fields", "Source"],
     "CoachNotes": ["NoteID", "ProjectID", "NoteDate", "Category", "NoteText"],
     "TrainingPlans": ["PlanID", "PlanDate", "GarminPlan", "CopilotPlan",
                       "SelectedPlan", "Status", "Notes"],
@@ -681,6 +688,34 @@ def delete_row(sheet: str, id_col: str, row_id) -> None:
         return
     _retry(ws.delete_rows, r)
     _bump()
+
+
+def delete_rows_by(sheet: str, col: str, value) -> int:
+    """어떤 칸의 값이 같은 줄을 모두 지웁니다 (예: 한 훈련의 랩 전부).
+
+    랩은 한 훈련 분량이 이어 붙어 있으므로, 연속 구간이면 한 번에 지웁니다.
+    """
+    cols = SCHEMA.get(sheet, [])
+    if not use_gsheets() or col not in cols:
+        df = load_data(sheet)
+        keep = df[df[col].astype(str) != str(value)]
+        n = len(df) - len(keep)
+        if n:
+            write_sheet(sheet, keep)
+        return n
+    ws = _retry(_spreadsheet().worksheet, sheet)
+    vals = _retry(ws.col_values, cols.index(col) + 1)
+    want = str(value).strip()
+    hits = [i + 1 for i, v in enumerate(vals) if str(v).strip() == want]
+    if not hits:
+        return 0
+    if hits[-1] - hits[0] + 1 == len(hits):          # 이어져 있으면 한 번에
+        _retry(ws.delete_rows, hits[0], hits[-1])
+    else:
+        for r in reversed(hits):
+            _retry(ws.delete_rows, r)
+    _bump()
+    return len(hits)
 
 
 def append_rows(sheet: str, new_df: pd.DataFrame) -> None:
