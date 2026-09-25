@@ -46,7 +46,14 @@ SCHEMA: dict[str, list[str]] = {
                  "MovingMinutes",
                  # 맨 뒤에 추가 — 가민이 그 활동에 매긴 '운동 부하(Training Load)'.
                  # 이걸 모아 날짜별로 더하면 가민의 '운동 부하' 막대 그래프가 됩니다.
-                 "TrainingLoad"],
+                 "TrainingLoad",
+                 # 맨 뒤에 추가 — .fit 파일의 1초 기록에서 뽑은 값들.
+                 # 원본 1초 기록은 저장하지 않습니다(1년이면 시트 한도를 넘습니다).
+                 # 대신 '여러 훈련을 가로질러 비교되는' 값만 남깁니다.
+                 "DecouplingPct",    # 전반/후반 속도÷심박 (쭉 달린 훈련만)
+                 "GctDriftPct",      # 후반 접지시간 변화율 = 자세 피로
+                 "WatchZoneSec",     # 시계가 직접 잰 존 체류 시간 "28|35|3478|..."
+                 "WatchZoneBounds"],  # 그때 쓰던 존 경계 "107|124|140|148|156|180"
     # ── 가민 일일 지표 (Connect 홈에서 매일 보이는 값) ──────────────────────
     "DailyStatus": ["StatusID", "StatusDate", "TrainingStatus", "AcuteLoad", "LoadRatio",
                     "RecoveryTimeHr", "TrainingReadiness", "BodyBattery",
@@ -58,7 +65,11 @@ SCHEMA: dict[str, list[str]] = {
                     # 이 줄이 아침 체크인인지 훈련 후 체크인인지
                     "SleepHistory", "StressHistory", "EntryKind",
                     # 맨 뒤에 추가 — 가민 '만성 부하'(최근 28일). 부하 비율의 분모.
-                    "ChronicLoad"],
+                    "ChronicLoad",
+                    # 맨 뒤에 추가 — 고강도 분은 '당일'로 받습니다.
+                    # 주간 누적은 이 값을 7일 굴려서 앱이 계산합니다.
+                    # (기존 IntensityMinutes 는 예전에 받아 적던 가민 주간 누적)
+                    "IntensityMinutesDay"],
     # ── 프로필·지표 변경 이력 (날짜별 스냅샷) ─────────────────────────────
     #    체중/심박/LTHR 이 바뀐 시점을 남기면 과거 훈련은 그 시점 값으로 계산됩니다.
     "Metrics": ["MetricID", "MetricDate", "HRRest", "HRMax", "VO2Max", "FitnessAge",
@@ -75,6 +86,10 @@ SCHEMA: dict[str, list[str]] = {
     "Body": ["BodyID", "MeasureDate", "Source", "WeightKg", "BodyFatPct",
              "BodyFatKg", "SkeletalMuscleKg", "BMI", "BodyWaterL",
              "ProteinKg", "MineralKg", "VisceralFatLevel", "BMR", "Notes"],
+    # ── 부상 · 통증 기록 ────────────────────────────────────────────────
+    #    한 줄 = 한 번의 통증/부상. 끝난 날을 비워 두면 '진행 중'입니다.
+    "Injury": ["InjuryID", "StartDate", "EndDate", "Site", "Side", "Severity",
+               "Status", "Cause", "Notes"],
     "Shoes": ["ShoeID", "ShoeName", "Brand", "PurchaseDate", "InitialDistanceKm",
               "TargetDistanceKm", "Status", "Category", "Notes",
               # 맨 뒤에 추가 — '기존 누적'이 어느 날짜까지를 포함한 값인지.
@@ -108,10 +123,12 @@ NUMERIC_COLS = {
     "WeightKg", "BodyFatPct", "VO2Max", "LTPower", "InitialDistanceKm",
     # 체성분 (인바디)
     "BodyFatKg", "SkeletalMuscleKg", "BMI", "BodyWaterL", "ProteinKg",
-    "MineralKg", "VisceralFatLevel", "BMR",
+    "MineralKg", "VisceralFatLevel", "BMR", "Severity",
     "TargetDistanceKm",
     # 가민 지표
-    "AcuteLoad", "ChronicLoad", "LoadRatio", "RecoveryTimeHr", "HRVms", "IntensityMinutes",
+    "AcuteLoad", "ChronicLoad", "LoadRatio", "RecoveryTimeHr", "HRVms",
+    "IntensityMinutes", "IntensityMinutesDay",
+    "DecouplingPct", "GctDriftPct",
     "HRRest", "HRMax",
     "FitnessAge", "EnduranceScore", "HillScore",
     "RzTSB", "RzMarathonShape", "RzEffVO2max",
@@ -505,8 +522,21 @@ def _read_all(version: int = 0) -> dict[str, pd.DataFrame]:
 
 
 def load_data(sheet: str) -> pd.DataFrame:
+    """시트 한 개를 앱이 쓰는 모양으로 돌려줍니다.
+
+    읽기 자체는 _read_all 이 **모든 시트를 한 번에** 받아 5분간 캐시하므로,
+    화면을 그릴 때 네트워크를 다시 타지 않습니다. 남는 비용은 호출마다 도는
+    _normalize(열 맞추기·형 변환)인데, 한 화면이 같은 시트를 여러 번 부르는
+    일이 흔해서 그것도 판(version)별로 담아 둡니다. 부르는 쪽이 값을 고쳐도
+    안전하도록 사본을 돌려줍니다.
+    """
+    ver = st.session_state.get("_db_version", 0)
+    ck = f"_norm_{sheet}_{ver}"
+    hit = st.session_state.get(ck)
+    if hit is not None:
+        return hit.copy()
     try:
-        raw = _read_all(st.session_state.get("_db_version", 0)).get(
+        raw = _read_all(ver).get(
             sheet, pd.DataFrame(columns=SCHEMA.get(sheet, [])))
     except QuotaError:
         st.error("⏳ Google Sheets 호출 한도(분당)를 넘었습니다. "
@@ -515,7 +545,13 @@ def load_data(sheet: str) -> pd.DataFrame:
     except Exception as e:
         st.error(f"'{sheet}' 시트를 읽지 못했습니다: {e}")
         raw = pd.DataFrame(columns=SCHEMA.get(sheet, []))
-    return _normalize(raw.copy(), sheet)
+    out = _normalize(raw.copy(), sheet)
+    # 판이 바뀌면 옛 판의 사본은 버립니다 (session_state 가 계속 불어나지 않게)
+    for k in [k for k in st.session_state
+              if str(k).startswith("_norm_") and not str(k).endswith(f"_{ver}")]:
+        st.session_state.pop(k, None)
+    st.session_state[ck] = out
+    return out.copy()
 
 
 def _bump():
@@ -574,6 +610,79 @@ def write_sheet(sheet: str, df: pd.DataFrame) -> None:
     _bump()
 
 
+def _set_cells(df: pd.DataFrame, idx, values: dict) -> None:
+    """한 행의 여러 칸을 채웁니다. pandas 3.0 은 숫자 열에 ''를 넣으면 TypeError
+    를 내므로, 안 들어가는 값이면 그 열을 object 로 한 단계 올린 뒤 넣습니다."""
+    for col, v in values.items():
+        if col not in df.columns:
+            df[col] = ""
+        try:
+            df.loc[idx, col] = v
+        except (TypeError, ValueError):
+            df[col] = df[col].astype(object)
+            df.loc[idx, col] = v
+
+
+def _find_row_no(ws, id_col_idx: int, row_id) -> int:
+    """시트에서 그 ID가 있는 줄 번호(1부터). 없거나 여러 개면 0."""
+    vals = _retry(ws.col_values, id_col_idx)
+    want = str(row_id).strip()
+    hits = [i + 1 for i, v in enumerate(vals) if str(v).strip() == want]
+    return hits[0] if len(hits) == 1 else 0
+
+
+def update_row(sheet: str, id_col: str, row_id, values: dict) -> None:
+    """한 줄만 고칩니다.
+
+    예전에는 한 칸을 고쳐도 write_sheet 로 **시트를 통째로 지우고 다시** 썼습니다.
+    훈련이 수백 건 쌓이면 한 번 고칠 때마다 수만 칸을 올리게 되어 느리고
+    한도에도 걸립니다. 줄 번호를 찾아 그 줄만 덮어씁니다.
+    찾지 못하면(중복 ID 등) 안전하게 예전 방식으로 돌아갑니다.
+    """
+    cols = SCHEMA.get(sheet, [])
+    if not use_gsheets() or id_col not in cols:
+        df = load_data(sheet)
+        idx = df[id_col].astype(str) == str(row_id)
+        _set_cells(df, idx, {k: v for k, v in values.items() if k in df.columns})
+        write_sheet(sheet, df)
+        return
+    ws = _retry(_spreadsheet().worksheet, sheet)
+    r = _find_row_no(ws, cols.index(id_col) + 1, row_id)
+    if r <= 1:
+        df = load_data(sheet)
+        idx = df[id_col].astype(str) == str(row_id)
+        _set_cells(df, idx, {k: v for k, v in values.items() if k in df.columns})
+        write_sheet(sheet, df)
+        return
+    cur = load_data(sheet)
+    one = cur[cur[id_col].astype(str) == str(row_id)]
+    row = (one.iloc[0].to_dict() if len(one)
+           else {c: "" for c in cols})
+    row.update({k: v for k, v in values.items() if k in cols})
+    row[id_col] = row_id
+    _retry(ws.update, range_name=f"A{r}",
+           values=_to_cells(pd.DataFrame([row]), cols),
+           value_input_option="RAW")
+    _bump()
+
+
+def delete_row(sheet: str, id_col: str, row_id) -> None:
+    """한 줄만 지웁니다 — 시트 전체를 다시 쓰지 않습니다."""
+    cols = SCHEMA.get(sheet, [])
+    if not use_gsheets() or id_col not in cols:
+        df = load_data(sheet)
+        write_sheet(sheet, df[df[id_col].astype(str) != str(row_id)])
+        return
+    ws = _retry(_spreadsheet().worksheet, sheet)
+    r = _find_row_no(ws, cols.index(id_col) + 1, row_id)
+    if r <= 1:
+        df = load_data(sheet)
+        write_sheet(sheet, df[df[id_col].astype(str) != str(row_id)])
+        return
+    _retry(ws.delete_rows, r)
+    _bump()
+
+
 def append_rows(sheet: str, new_df: pd.DataFrame) -> None:
     """행 추가 (신규 등록용) — Sheets에서는 전체 재작성 없이 append."""
     if new_df is None or new_df.empty:
@@ -605,6 +714,64 @@ def export_excel_bytes() -> bytes:
         for sheet in SCHEMA:
             load_data(sheet).to_excel(w, sheet_name=sheet, index=False)
     return buf.getvalue()
+
+
+def read_backup(data) -> dict[str, pd.DataFrame]:
+    """백업 엑셀을 읽어 시트별 표로 돌려줍니다 (아직 아무것도 쓰지 않습니다).
+
+    새 칸은 **항상 맨 뒤에만** 늘려 왔으므로, 예전 백업에 없는 칸은 빈 칸으로
+    채우면 그대로 맞습니다. 앱이 모르는 칸은 버립니다.
+    """
+    import io
+    buf = io.BytesIO(data) if isinstance(data, (bytes, bytearray)) else data
+    xl = pd.ExcelFile(buf)
+    out = {}
+    for sheet in SCHEMA:
+        if sheet not in xl.sheet_names:
+            continue
+        df = pd.read_excel(xl, sheet_name=sheet)
+        df.columns = [str(c).strip() for c in df.columns]
+        cols = SCHEMA[sheet]
+        for c in cols:
+            if c not in df.columns:
+                df[c] = ""
+        out[sheet] = df.reindex(columns=cols).dropna(how="all")
+    return out
+
+
+def restore_preview(data) -> pd.DataFrame:
+    """복구하면 무엇이 어떻게 바뀌는지 — 쓰기 전에 보여 줍니다."""
+    back = read_backup(data)
+    rows = []
+    for sheet in SCHEMA:
+        now = len(load_data(sheet))
+        if sheet not in back:
+            rows.append({"시트": sheet, "지금": now, "백업": "(없음)",
+                         "결과": "그대로 둠"})
+            continue
+        n = len(back[sheet])
+        rows.append({"시트": sheet, "지금": now, "백업": n,
+                     "결과": ("그대로" if n == now else
+                              f"{n - now:+d}줄" )})
+    return pd.DataFrame(rows)
+
+
+def restore_excel(data, sheets: list[str] | None = None) -> dict:
+    """백업 엑셀로 되돌립니다 — 고른 시트를 **통째로 바꿔 씁니다**.
+
+    되돌리기 전 상태는 사라지므로, 부르는 쪽에서 먼저 지금 상태를 내려받게
+    하세요. 한 시트라도 읽지 못하면 아무것도 쓰지 않고 멈춥니다.
+    """
+    back = read_backup(data)
+    want = [s for s in (sheets or list(back)) if s in back]
+    if not want:
+        raise ValueError("백업 파일에서 알아볼 수 있는 시트가 없습니다. "
+                         "이 앱이 만든 백업 파일이 맞는지 확인해 주세요.")
+    done = {}
+    for sheet in want:
+        write_sheet(sheet, back[sheet])
+        done[sheet] = len(back[sheet])
+    return done
 
 
 # ---------------------------------------------------------------------------
