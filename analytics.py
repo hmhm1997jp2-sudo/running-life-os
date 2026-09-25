@@ -749,12 +749,113 @@ TREND_METRICS = [
     ("fitage",    "피트니스 나이",    "metric", ["FitnessAge"],       "line", ".1f", None),
     ("endurance", "Endurance Score",  "metric", ["EnduranceScore"],   "line", ",d", None),
     ("hill",      "Hill Score",       "metric", ["HillScore"],        "line", ",d", None),
+    # RUNALYZE — 가민에 없는 값
+    ("rztsb",     "TSB · 폼 (런얼라이즈)",        "metric", ["RzTSB"],
+     "line", ".1f", None),
+    ("rzshape",   "Marathon Shape (런얼라이즈)",  "metric", ["RzMarathonShape"],
+     "line", ".1f", None),
+    ("rzvo2",     "Effective VO₂max (런얼라이즈)", "metric", ["RzEffVO2max"],
+     "line", ".1f", None),
+    # 몸 — 러닝 지표와 같은 날짜 축에 올려 두면 서로 영향을 주는 게 보입니다
+    ("weight",    "체중 (kg)",        "body", ["WeightKg"],         "line", ".1f", None),
+    ("bodyfat",   "체지방률 (%)",     "body", ["BodyFatPct"],       "line", ".1f", None),
+    ("muscle",    "골격근량 (kg)",    "body", ["SkeletalMuscleKg"], "line", ".1f", None),
 ]
 TREND_LABEL = {k: lab for k, lab, *_ in TREND_METRICS}
 TREND_DEFAULT = ["dayload", "load", "ratio", "hrv"]
 
 # 여러 줄이 한 칸에 들어가는 지표의 줄 이름
 TREND_SERIES_KR = {"AcuteLoad": "급성 (최근 7일)", "ChronicLoad": "만성 (최근 28일)"}
+
+# 음수가 정상인 지표 — '0보다 큰 값이 있나'로 판단하면 안 됩니다
+TREND_SIGNED = {"RzTSB"}
+
+# ── 체중 · 체성분 ───────────────────────────────────────────────────────────
+# (컬럼, 이름, 단위, 형식, 좋은 방향, 설명) — 좋은 방향 0 = 좋고 나쁨을 말하지 않음
+BODY_METRICS = [
+    ("WeightKg", "체중", "kg", ".1f", 0,
+     "매주 **같은 요일·같은 시간·같은 조건**(기상 직후, 화장실 다녀온 뒤)에 재야 "
+     "비교가 됩니다. 하루 사이 1kg 안팎은 수분이라 흐름만 보세요."),
+    ("BodyFatPct", "체지방률", "%", ".1f", -1,
+     "체중이 그대로여도 이 값이 내려가면 근육이 늘고 지방이 준 것입니다. "
+     "러너에게는 체중 숫자보다 이쪽이 더 많은 걸 말해 줍니다."),
+    ("SkeletalMuscleKg", "골격근량", "kg", ".1f", +1,
+     "인바디의 골격근량. 훈련량을 늘리는 동안 이 값이 **유지되거나 늘면** "
+     "잘 가고 있는 것이고, 체중과 같이 떨어지면 에너지가 부족하다는 신호입니다."),
+    ("BodyFatKg", "체지방량", "kg", ".1f", -1,
+     "체지방의 절대량. 체지방률은 근육량 변화에도 흔들려서, 둘을 같이 보면 "
+     "‘근육이 는 건지 지방이 준 건지’가 갈립니다."),
+    ("BMI", "BMI", "", ".1f", 0,
+     "키 대비 체중. 근육량을 구분하지 못해서 러너에게는 참고 수준입니다."),
+    ("BodyWaterL", "체수분", "L", ".1f", 0,
+     "몸 전체의 수분량. 더운 시기나 긴 훈련 뒤에 눈에 띄게 줄기도 합니다."),
+    ("ProteinKg", "단백질", "kg", ".1f", 0, "인바디의 단백질량(근육의 재료)."),
+    ("MineralKg", "무기질", "kg", ".2f", 0, "뼈와 체액의 무기질량."),
+    ("VisceralFatLevel", "내장지방 레벨", "", ".0f", -1,
+     "내장지방 수준(보통 1~20). 인바디 기준 **10 미만이 표준 범위**입니다."),
+    ("BMR", "기초대사량", "kcal", ",.0f", 0,
+     "가만히 있어도 쓰는 열량. 근육이 늘면 같이 올라갑니다."),
+]
+BODY_META = {c: (n, u, f, g, d) for c, n, u, f, g, d in BODY_METRICS}
+BODY_LABEL = {c: (f"{n} ({u})" if u else n) for c, n, u, *_ in BODY_METRICS}
+BODY_SOURCES = ["체중계", "인바디"]
+
+
+def prepare_body(df_body: pd.DataFrame, days: int | None = None) -> pd.DataFrame:
+    """체중·체성분 기록을 날짜순으로 정리합니다. 0은 '미입력'으로 봅니다."""
+    if df_body is None or df_body.empty or "MeasureDate" not in df_body.columns:
+        return pd.DataFrame()
+    b = df_body.copy()
+    b["MeasureDate"] = pd.to_datetime(b["MeasureDate"], errors="coerce")
+    b = b.dropna(subset=["MeasureDate"]).sort_values("MeasureDate")
+    for col, *_ in BODY_METRICS:
+        if col in b.columns:
+            v = pd.to_numeric(b[col], errors="coerce")
+            b[col] = v.where(v > 0)
+    if days:
+        cutoff = pd.Timestamp(datetime.now()).normalize() - timedelta(days=days - 1)
+        b = b[b["MeasureDate"] >= cutoff]
+    return b.reset_index(drop=True)
+
+
+def body_available(bd: pd.DataFrame) -> list[str]:
+    if bd is None or bd.empty:
+        return []
+    return [c for c, *_ in BODY_METRICS
+            if c in bd.columns and bd[c].notna().sum() > 0]
+
+
+def body_summary(bd: pd.DataFrame, recent: int = 4) -> pd.DataFrame:
+    """최근 값과 그 이전 평균을 견준 한 장짜리 표."""
+    if bd is None or bd.empty:
+        return pd.DataFrame()
+    rows = []
+    for col, name, unit, fmt, good, _desc in BODY_METRICS:
+        if col not in bd.columns:
+            continue
+        s = bd[col].dropna()
+        if s.empty:
+            continue
+        cur = float(s.iloc[-1])
+        prev = s.iloc[-(recent + 1):-1]
+        d = cur - float(prev.mean()) if len(prev) else np.nan
+        rows.append({
+            "지표": f"{name} ({unit})" if unit else name,
+            "최근 값": format(cur, fmt),
+            # 지표마다 기록 수가 달라서, 열 이름에 횟수를 넣으면 열이 따로 생깁니다
+            "이전 평균": format(float(prev.mean()), fmt) if len(prev) else "—",
+            "변화": ("—" if not np.isfinite(d) else
+                    f"{d:+{fmt}}" + ("" if good == 0 else
+                                     (" 👍" if d * good > 0 else " 👀"))),
+            "측정": f"{len(s)}회",
+        })
+    return pd.DataFrame(rows)
+
+
+def last_monday(today: date | None = None) -> date:
+    """가장 가까운 지난 월요일 (오늘이 월요일이면 오늘)."""
+    t = today or datetime.now().date()
+    return t - timedelta(days=t.weekday())
 
 _HRV_KR = {"Balanced": "균형 잡힘", "Unbalanced": "불균형",
            "Low": "낮음", "Poor": "나쁨", "No Status": "상태 없음"}
@@ -764,12 +865,20 @@ HRV_TONE_ORDER = ["균형 잡힘", "불균형", "낮음", "나쁨", "상태 없�
 _TREND_DATE = {"daily": "StatusDate", "metric": "MetricDate", "workout": "WorkoutDate"}
 
 
-def _trend_frame(src, daily, metric, workouts):
+def _trend_vals(s: pd.Series, col: str) -> pd.Series:
+    """0은 '미입력'으로 봅니다 — 단, 음수가 정상인 지표(TSB)는 0만 뺍니다."""
+    v = pd.to_numeric(s, errors="coerce")
+    return v.where(v != 0) if col in TREND_SIGNED else v.where(v > 0)
+
+
+def _trend_frame(src, daily, metric, workouts, body=None):
     """출처별 표 + 날짜 컬럼. 훈련은 하루에 여러 건이라 날짜별로 더합니다."""
     if src == "daily":
         return daily, "StatusDate"
     if src == "metric":
         return metric, "MetricDate"
+    if src == "body":
+        return (body if body is not None else pd.DataFrame()), "MeasureDate"
     if workouts is None or workouts.empty or "TrainingLoad" not in workouts.columns:
         return pd.DataFrame(), "WorkoutDate"
     w = workouts.copy()
@@ -784,38 +893,40 @@ def _trend_frame(src, daily, metric, workouts):
     return g, "WorkoutDate"
 
 
-def _trend_src(key, daily, metric, workouts):
+def _trend_src(key, daily, metric, workouts, body=None):
     for k, lab, src, cols, mark, fmt, dom in TREND_METRICS:
         if k != key:
             continue
-        df, dcol = _trend_frame(src, daily, metric, workouts)
+        df, dcol = _trend_frame(src, daily, metric, workouts, body)
         return lab, df, dcol, cols, mark, fmt, dom
     return None
 
 
 def trend_available(daily: pd.DataFrame, metric: pd.DataFrame,
-                    workouts: pd.DataFrame = None) -> list[str]:
+                    workouts: pd.DataFrame = None,
+                    body: pd.DataFrame = None) -> list[str]:
     """실제로 값이 들어 있는 지표 키만 골라 돌려줍니다."""
     out = []
     for k, _lab, src, cols, *_ in TREND_METRICS:
-        df, _dcol = _trend_frame(src, daily, metric, workouts)
+        df, _dcol = _trend_frame(src, daily, metric, workouts, body)
         if df is None or df.empty:
             continue
-        if any(c in df.columns
-               and (pd.to_numeric(df[c], errors="coerce") > 0).sum() > 0 for c in cols):
+        if any(c in df.columns and _trend_vals(df[c], c).notna().sum() > 0
+               for c in cols):
             out.append(k)
     return out
 
 
 def trend_panels(daily: pd.DataFrame, metric: pd.DataFrame, keys,
-                 workouts: pd.DataFrame = None) -> list[dict]:
+                 workouts: pd.DataFrame = None,
+                 body: pd.DataFrame = None) -> list[dict]:
     """고른 지표를 한 날짜 축에 세우기 좋은 형태로 정리합니다.
 
     반환: [{key, label, mark, fmt, domain, multi, data}] —
     data 는 [날짜, 계열, 값, 상태] 형태의 긴 표입니다."""
     panels = []
     for key in keys:
-        got = _trend_src(key, daily, metric, workouts)
+        got = _trend_src(key, daily, metric, workouts, body)
         if not got:
             continue
         lab, df, dcol, cols, mark, fmt, dom = got
@@ -825,10 +936,9 @@ def trend_panels(daily: pd.DataFrame, metric: pd.DataFrame, keys,
         for c in cols:
             if c not in df.columns:
                 continue
-            v = pd.to_numeric(df[c], errors="coerce")
             sub = pd.DataFrame({"날짜": pd.to_datetime(df[dcol], errors="coerce"),
                                 "계열": TREND_SERIES_KR.get(c, lab),
-                                "값": v.where(v > 0)})
+                                "값": _trend_vals(df[c], c)})
             if key == "hrv" and "HRVStatus" in df.columns:
                 sub["상태"] = df["HRVStatus"].map(
                     lambda x: _HRV_KR.get(str(x).strip(), "상태 없음")).values
@@ -876,6 +986,139 @@ def form_trend(df_work: pd.DataFrame, days: int = 365,
     keep = ["WorkoutDate", "WorkoutType", "DistanceKm", "PaceSec"] + have
     out = d.loc[mask, [c for c in keep if c in d.columns]].copy()
     return out.sort_values("WorkoutDate").tail(max(int(limit), 2))
+
+
+# ── 훈련별 지표 추이 ────────────────────────────────────────────────────────
+# (컬럼, 이름, 단위, 형식, 좋은 방향(-1 낮을수록 / +1 높을수록 / 0 판단 안 함), 설명)
+# 형식 'pace' 는 초/km 를 m:ss 로 그립니다(축을 뒤집어 위쪽이 빠름).
+WORKOUT_TREND_METRICS = [
+    ("PaceSec", "페이스", "/km", "pace", -1,
+     "훈련 전체의 평균 페이스. **유형을 하나로 좁혀서** 봐야 뜻이 있습니다 — "
+     "이지런과 인터벌을 섞으면 그날 무슨 훈련을 했는지만 보입니다."),
+    ("AvgHeartRate", "평균 심박", "bpm", ",d", -1,
+     "같은 유형·같은 페이스에서 심박이 내려가면 좋아지는 중입니다. "
+     "더위·수면 부족·카페인에도 올라가니 한두 번으로 판단하지 마세요."),
+    ("EF", "EF (속도 ÷ 심박)", "", ".3f", +1,
+     "러닝 이코노미. **같은 심박으로 더 빨리** 달릴수록 커집니다. "
+     "절대값은 사람마다 달라 비교 의미가 없고, 내 선의 방향만 봅니다."),
+    ("Decoupling", "심박 디커플링", "%", ".1f", -1,
+     "전반 대비 후반의 ‘속도÷심박’ 저하율. 낮을수록 후반까지 페이스를 버틴 것이고, "
+     "5% 미만이면 양호합니다. **랩이 4개 이상 저장된 훈련**만 계산됩니다."),
+    ("TrainingLoad", "운동 부하", "", ",d", 0,
+     "가민이 그 활동에 매긴 점수. 높고 낮음이 좋고 나쁨은 아니고, "
+     "주간 배치(강-약-강)가 잘 되고 있는지를 봅니다."),
+    ("AerobicTE", "유산소 TE", "", ".1f", 0,
+     "그 훈련이 유산소 능력에 준 자극(0~5). 매번 4~5면 과부하, 매번 1~2면 자극 부족입니다."),
+    ("AnaerobicTE", "무산소 TE", "", ".1f", 0,
+     "무산소 자극(0~5). 스피드 훈련을 하지 않으면 계속 0에 가깝습니다."),
+    ("AvgCadence", "케이던스", "spm", ",d", +1,
+     "분당 걸음 수. 보통 높을수록 착지 충격이 분산되지만, 무리해서 올릴 값은 아닙니다. "
+     "페이스가 빨라지면 저절로 올라갑니다."),
+    ("AvgStrideM", "보폭", "m", ".2f", 0,
+     "한 걸음의 거리. 빨리 달리면 늘어납니다 — 좋고 나쁨이 아니라 "
+     "**같은 페이스에서** 어떻게 변했는지를 보세요."),
+    ("AvgGCTms", "접지 시간", "ms", ",d", -1,
+     "발이 땅에 닿아 있는 시간. 짧을수록 탄력적이지만, 느리게 달리면 당연히 길어집니다."),
+    ("AvgVertOscCm", "수직 진동", "cm", ".1f", -1,
+     "달리면서 위아래로 튄 폭. 단독으로 보기보다 **수직 비율**로 보세요."),
+    ("AvgVertRatioPct", "수직 비율", "%", ".1f", -1,
+     "수직 진동 ÷ 보폭. 앞으로 간 거리 대비 위로 튄 정도라 **낮을수록 경제적**입니다. "
+     "키·페이스 차이를 흡수해서, 폼 지표 중에서는 훈련끼리 비교하기 가장 좋습니다. "
+     "가민 기준 6% 아래면 매우 좋음, 8% 부근이 보통입니다."),
+    ("RPE", "RPE (체감 강도)", "", ".1f", 0,
+     "1~10 주관적 강도. 심박은 그대로인데 RPE만 계속 올라가면 "
+     "누적 피로나 컨디션 저하를 의심할 만합니다."),
+    ("DistanceKm", "거리", "km", ".2f", 0, "한 번에 달린 거리."),
+    ("DurationMinutes", "시간", "분", ".0f", 0, "한 번에 달린 시간."),
+    ("ElevationGainM", "상승고도", "m", ",d", 0,
+     "누적 상승. 페이스나 심박이 갑자기 나빠 보이는 날은 여기를 같이 보세요."),
+]
+WORKOUT_TREND_META = {c: (name, unit, fmt, good, desc)
+                      for c, name, unit, fmt, good, desc in WORKOUT_TREND_METRICS}
+WORKOUT_TREND_LABEL = {c: (f"{name} ({unit})" if unit else name)
+                       for c, name, unit, *_ in WORKOUT_TREND_METRICS}
+WORKOUT_TREND_DEFAULT = ["PaceSec", "AvgHeartRate", "EF", "AvgVertRatioPct"]
+
+
+def workout_trend(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
+                  days: int | None = None, types=None, ma: int = 4) -> pd.DataFrame:
+    """훈련 한 건 = 한 점. 기간·유형으로 거른 뒤 지표별 이동평균까지 붙여 돌려줍니다.
+
+    이동평균은 **거르고 남은 것들**을 시간순으로 계산합니다. 유형을 하나로 좁혀서
+    보면 '같은 종류의 훈련이 어떻게 변해왔나'가 되고, 섞어 보면 전체 흐름이 됩니다."""
+    d = prepare_workouts(df_work)
+    if d.empty:
+        return pd.DataFrame()
+    if days:
+        cutoff = pd.Timestamp(datetime.now()).normalize() - timedelta(days=days - 1)
+        d = d[d["WorkoutDate"] >= cutoff]
+    if types:
+        d = d[d["WorkoutType"].isin(list(types))]
+    if d.empty:
+        return pd.DataFrame()
+    d = d.sort_values("WorkoutDate").copy()
+
+    # EF — 이지런만 쓰는 efficiency_factor()와 달리, 여기서는 고른 유형 그대로 계산합니다
+    hr = pd.to_numeric(d.get("AvgHeartRate"), errors="coerce")
+    d["EF"] = np.where(hr > 0, d["SpeedMMin"] / hr, np.nan)
+
+    # 디커플링 — 랩이 저장된 훈련만
+    if df_laps is not None and not df_laps.empty and "WorkoutID" in df_laps.columns:
+        dec = {str(wid): decoupling(g)
+               for wid, g in df_laps.groupby(df_laps["WorkoutID"].astype(str))}
+        d["Decoupling"] = d["WorkoutID"].astype(str).map(dec)
+    else:
+        d["Decoupling"] = np.nan
+
+    keep = ["WorkoutDate", "WorkoutType", "WorkoutID"]
+    for col, *_ in WORKOUT_TREND_METRICS:
+        if col not in d.columns:
+            continue
+        v = pd.to_numeric(d[col], errors="coerce")
+        v = v.where(v > 0) if col != "Decoupling" else v   # 디커플링은 음수가 정상
+        if v.notna().sum() == 0:
+            continue
+        d[col] = v
+        d[f"{col}_MA"] = v.rolling(max(int(ma), 2), min_periods=2).mean()
+        keep += [col, f"{col}_MA"]
+    return d[keep].reset_index(drop=True)
+
+
+def workout_trend_available(wt: pd.DataFrame) -> list[str]:
+    """실제로 값이 들어 있는 지표만."""
+    if wt is None or wt.empty:
+        return []
+    return [c for c, *_ in WORKOUT_TREND_METRICS if c in wt.columns]
+
+
+# ── 단조로움(Monotony) · 스트레인(Strain) ──────────────────────────────────
+# Foster: 주간 일별 부하의 평균 ÷ 표준편차. 매일 똑같이 달리면 커집니다.
+def monotony_meta(v) -> tuple[str, str]:
+    x = _num(v, np.nan)
+    if not np.isfinite(x):
+        return "info", "7일이 모여야 계산됩니다"
+    if x < 1.5:
+        return "ok", "강약 대비가 충분합니다"
+    if x < 2.0:
+        return "warn", "조금 단조롭습니다 — 쉬운 날을 더 쉽게"
+    return "bad", "매일 비슷하게 달리고 있습니다 — 완전 휴식일이나 아주 쉬운 날을 넣으세요"
+
+
+def strain_meta(series: pd.Series, lookback: int = 28) -> tuple[str, str]:
+    """스트레인은 사람마다 절대 기준이 달라, **내 최근 평균과 견줘서** 말합니다."""
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return "info", "7일이 모여야 계산됩니다"
+    cur = float(s.iloc[-1])
+    base = s.iloc[-(lookback + 1):-1]
+    if len(base) < 7 or float(base.mean()) <= 0:
+        return "info", "비교할 지난 기록이 아직 부족합니다"
+    r = cur / float(base.mean())
+    if r >= 1.5:
+        return "bad", f"최근 {len(base)}일 평균의 {r:.1f}배 — 부하와 단조로움이 함께 높습니다"
+    if r >= 1.2:
+        return "warn", f"최근 {len(base)}일 평균의 {r:.1f}배 — 올라가는 중입니다"
+    return "ok", f"최근 {len(base)}일 평균의 {r:.1f}배 — 평소 범위입니다"
 
 
 def form_summary(ft: pd.DataFrame, recent: int = 5) -> pd.DataFrame:
@@ -1234,8 +1477,9 @@ def parse_time_str(s) -> float:
 
 def _measured_ts(df: pd.DataFrame, date_col: str) -> pd.Series:
     """'언제 본 값인가'를 시각까지 포함해 돌려줍니다.
-    MeasuredAt('2026-09-20 07:51 (기상 직후)')이 있으면 그 시각을, 없으면 그 날 00:00을
-    씁니다. 같은 날 아침/훈련 후 두 줄이 있을 때 어느 쪽이 더 나중인지 가리는 데 씁니다."""
+    MeasuredAt('2026-09-20 07:51 (가민 업데이트 기준)')이 있으면 그 시각을,
+    없으면 그 날 00:00을 씁니다. 회복 시간을 '지금 기준 남은 시간'으로 되돌리거나,
+    같은 날 줄이 둘 이상일 때 어느 쪽이 더 나중인지 가리는 데 씁니다."""
     base = pd.to_datetime(df[date_col], errors="coerce")
     if "MeasuredAt" not in df.columns:
         return base
