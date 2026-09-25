@@ -819,6 +819,15 @@ def panel_title(label: str):
                            color=C["muted"], anchor="start", offset=2)
 
 
+def _pyfmt(fmt: str) -> str:
+    """Vega 형식 문자열을 파이썬 format()이 받을 수 있게 바꿉니다.
+    Vega의 ',d'는 정수 서식이라 파이썬에서 float에 쓰면 터집니다 → ',.0f'."""
+    f = str(fmt or "")
+    if f.endswith("d"):
+        return f[:-1] + ".0f"
+    return f or ".2f"
+
+
 def _tick_step(fmt: str):
     """'.1f' → 0.1. 눈금 간격을 표시 자릿수보다 잘게 두면 8.25가 8.3으로 반올림돼
     '8.3, 8.3'처럼 같은 눈금이 두 번 찍힙니다."""
@@ -934,13 +943,16 @@ MMSS_EXPR = ("floor(datum.value/60) + ':' + "
              "format(round(datum.value%60), 'd')")
 
 
-def workout_trend_charts(wt, keys, multi=True, h_pc=118, h_mb=98):
+def workout_trend_charts(wt, keys, multi=True, ma_label="4주", show_avg=True,
+                         show_trend=True, h_pc=124, h_mb=104):
     """훈련 한 건 = 점 하나. 지표마다 한 칸씩 위아래로, 날짜 축은 맨 아래만.
-    선은 최근 4회 이동평균입니다(analytics 에서 붙여 옵니다)."""
+
+    선은 최대 세 개입니다 — 먹색 = 이동평균, 회색 파선 = 이 기간 전체 평균,
+    주황 = 선형 추세(뜻이 있는 지표만, analytics.TREND_LINE_OK).
+    """
     if wt is None or wt.empty or not keys:
         return None
-    span = _span_days(wt["WorkoutDate"])
-    xax = date_axis(span)
+    xax = date_axis(_span_days(wt["WorkoutDate"]))
     # 칸마다 값이 있는 날짜가 다릅니다(폼 지표는 가끔만 기록됨). x 범위를 고정하지
     # 않으면 칸마다 축이 달라져서, 세로로 읽을 때 같은 가로 위치가 다른 날이 됩니다.
     _lo, _hi = wt["WorkoutDate"].min(), wt["WorkoutDate"].max()
@@ -950,10 +962,13 @@ def workout_trend_charts(wt, keys, multi=True, h_pc=118, h_mb=98):
     charts = []
     for i, col in enumerate(keys):
         name, unit, fmt, _good, _desc = ana.WORKOUT_TREND_META[col]
-        sub = wt[["WorkoutDate", "WorkoutType", col, f"{col}_MA"]].dropna(subset=[col])
+        _cols = ["WorkoutDate", "WorkoutType", col] + [
+            c for c in (f"{col}_MA", f"{col}_AV", f"{col}_TR") if c in wt.columns]
+        sub = wt[_cols].dropna(subset=[col])
         if sub.empty:
             continue
         is_pace = fmt == "pace"
+        nfmt = ".0f" if is_pace else fmt
         ysc = alt.Scale(zero=False, padding=10, reverse=is_pace)
         yax = (alt.Axis(labelExpr=MMSS_EXPR, tickCount=4) if is_pace else
                alt.Axis(format=fmt, tickCount=3,
@@ -963,9 +978,8 @@ def workout_trend_charts(wt, keys, multi=True, h_pc=118, h_mb=98):
         y = alt.Y(f"{col}:Q", title=None, scale=ysc, axis=yax)
         tip = [alt.Tooltip("WorkoutDate:T", title="날짜", format="%Y-%m-%d"),
                alt.Tooltip("WorkoutType:N", title="유형"),
-               (alt.Tooltip(f"{col}:Q", title=name, format=".0f") if is_pace else
-                alt.Tooltip(f"{col}:Q", title=name, format=fmt))]
-        # 유형이 여럿일 때만 색으로 구분합니다 — 하나면 범례가 자리만 차지합니다
+               alt.Tooltip(f"{col}:Q", title=name, format=nfmt)]
+        # 유형이 여럿일 때만 색으로 구분합니다 — 하나면 범례가 자리만 차지합니다.
         # 여기서는 '어느 유형인지 구분'이 목적이라 밝기 단계(ramp)가 아니라
         # 서로 다른 색을 씁니다 — 작은 칸에서 같은 계열 3단계는 구분이 안 됩니다
         colr = (alt.Color("WorkoutType:N", title=None,
@@ -975,19 +989,47 @@ def workout_trend_charts(wt, keys, multi=True, h_pc=118, h_mb=98):
                                              symbolType="circle", symbolSize=90)
                                   if i == 0 else None))
                 if (multi and len(_tdom) > 1) else alt.value(C["primary"]))
+
+        layers = []
+
+        def _line(c, color, dash=None, w=2.2, title=""):
+            if c not in sub.columns or sub[c].notna().sum() < 2:
+                return None
+            mk = dict(color=color, strokeWidth=w, opacity=.95)
+            if dash:
+                mk["strokeDash"] = dash
+            return alt.Chart(sub.dropna(subset=[c])).mark_line(**mk).encode(
+                x=x, y=alt.Y(f"{c}:Q", title=None, scale=ysc, axis=yax),
+                tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜", format="%Y-%m-%d"),
+                         alt.Tooltip(f"{c}:Q", title=title, format=nfmt)])
+
+        if show_avg:
+            layers.append(_line(f"{col}_AV", C["slate"], [5, 4], 1.6, "기간 평균"))
+        if show_trend and col in ana.TREND_LINE_OK:
+            layers.append(_line(f"{col}_TR", C["accent"], None, 2.0, "추세"))
+        if ma_label and ma_label != "없음":
+            # 이동평균선은 유형 색과 겹치면 안 됩니다 — 먹색 한 가지로 고정합니다
+            layers.append(_line(f"{col}_MA", C["ink"], None, 2.2,
+                                f"{ma_label} 이동평균"))
+        layers = [l for l in layers if l is not None]
         pts = alt.Chart(sub).mark_point(size=70, filled=True, opacity=.8).encode(
             x=x, y=y, color=colr, tooltip=tip)
-        # 이동평균선은 유형 색과 겹치면 안 됩니다 — 먹색 한 가지로 고정합니다
-        line = alt.Chart(sub.dropna(subset=[f"{col}_MA"])).mark_line(
-            color=C["ink"], strokeWidth=2.2, opacity=.9).encode(
-            x=x, y=alt.Y(f"{col}_MA:Q", title=None, scale=ysc, axis=yax),
-            tooltip=[alt.Tooltip("WorkoutDate:T", title="날짜", format="%Y-%m-%d"),
-                     alt.Tooltip(f"{col}_MA:Q", title=f"{name} 4회 평균",
-                                 format=".0f" if is_pace else fmt)])
+
         title = f"{name} ({unit})" if unit else name
         if is_pace:
             title += " — 위가 빠름"
-        charts.append((line + pts).properties(
+        _chg = (pd.to_numeric(sub.get(f"{col}_TR"), errors="coerce").dropna()
+                if show_trend and f"{col}_TR" in sub.columns else pd.Series(dtype=float))
+        if len(_chg) >= 2:
+            _d = float(_chg.iloc[-1] - _chg.iloc[0])
+            _ds = f"{_d:+{_pyfmt(nfmt)}}"
+            # '+0' 처럼 반올림해서 0이 되는 변화는 숫자보다 말이 정확합니다
+            title += (" · 추세 거의 없음" if float(_ds.replace(",", "")) == 0
+                      else f" · 추세 {_ds}")
+        ch = layers[0] if layers else pts
+        for l in layers[1:]:
+            ch = ch + l
+        charts.append((ch + pts if layers else pts).properties(
             height=ui.chart_height(h_pc, h_mb), title=panel_title(title)))
     return charts or None
 
@@ -1042,6 +1084,16 @@ def gauge_svg(score, bands, center_sub: str = "", unit: str = "",
         f"<text x='100' y='152' text-anchor='middle' "
         f"style='font-size:15px;font-weight:600;fill:var(--text-2)'>{center_sub}</text>"
         f"</svg></div>")
+
+
+def card_link(path: str, hint: str = "자세히") -> None:
+    """카드 아래 '어디로 가면 더 볼 수 있나' 한 줄.
+
+    Streamlit의 st.tabs 는 코드로 탭을 바꿀 수 없어서 진짜 링크는 못 만듭니다
+    — 대신 갈 곳을 정확히 적어 둡니다."""
+    st.markdown(
+        f"<p class='rl-sub' style='margin:8px 0 0;text-align:right'>"
+        f"{hint} → <b>{path}</b></p>", unsafe_allow_html=True)
 
 
 def factor_rows_html(factors) -> str:
@@ -1630,6 +1682,7 @@ with tab_today:
                  "sub": (f"평균 {ana.pace_str(_wk('Minutes') * 60 / _wk('Distance'))}"
                          if _wk("Distance") > 0 else None)},
             ], per_row_pc=2)
+            card_link("📊 분석 · 📋 훈련 이력")
 
 
     with _g1[1 % len(_g1)]:
@@ -1667,6 +1720,7 @@ with tab_today:
                  "sub": _im_s, "tone": _im_t,
                  "spark": hist_series(df_daily, "StatusDate", "IntensityMinutes")},
             ], per_row_pc=2)
+            card_link("📊 분석 · ⌚ 가민 추이 · 최근 추이 한눈에")
 
     _g2 = ui.cols(2, 1)
     with _g2[0]:
@@ -1695,8 +1749,8 @@ with tab_today:
             if any(gage(k) is not None and gage(k) >= 1 for k in _cond_keys):
                 st.caption("⚠️ 컨디션 값은 **그날 아침** 기준입니다. 날짜가 지난 값은 오늘 상태가 "
                            "아니니, ‘✍️ 기록 → ⌚ 가민 일일’에서 오늘 값을 넣어주세요.")
-            st.caption("타일 안의 작은 선은 **최근 30회 입력분**입니다 (마우스를 올리면 날짜별 값). "
-                       "더 긴 추세는 ‘📊 분석 → ⌚ 가민 추이’ 탭에서 기간을 골라 보세요.")
+            st.caption("타일 안의 작은 선은 **최근 30회 입력분**입니다 (마우스를 올리면 날짜별 값).")
+            card_link("📊 분석 · ⌚ 가민 추이")
 
 
     with _g2[1 % len(_g2)]:
@@ -1744,13 +1798,61 @@ with tab_today:
                     "집계되고, 최근 2개월 훈련 이력과 VO₂max 추정치를 씁니다. "
                     "평지나 트레드밀 위주로 뛰면 아예 안 뜨거나 한참 뒤에 생깁니다.",
                     "나이·성별 구분 없이 같은 기준입니다."), unsafe_allow_html=True)
+            card_link("📊 분석 · ⌚ 가민 추이 · 기량 점수")
 
+    # ── 몸 — 체중·체성분 (러닝 기반 건강관리) ────────────────────────────
+    _bd_home = ana.prepare_body(db.load_data("Body"))
+    _bs_home = ana.body_summary(_bd_home) if not _bd_home.empty else pd.DataFrame()
+    _g3 = ui.cols(2, 1)
+    with _g3[0]:
+        with ui.card("bodycard"):
+            if _bd_home.empty:
+                ui.head("⚖️ 몸", "체중·체성분")
+                st.caption("‘✍️ 기록 → ⚖️ 체중 · 체성분’에서 첫 측정을 넣으면 "
+                           "여기에 최근 값과 변화가 보입니다. "
+                           "매주 같은 요일·같은 조건에 재는 것이 핵심입니다.")
+            else:
+                _blast = _bd_home.iloc[-1]
+                ui.head("⚖️ 몸", f"{_bd_home['MeasureDate'].iloc[-1]:%Y-%m-%d} 측정 · "
+                                f"{_blast.get('Source') or '—'}")
+
+                def _btile(col):
+                    name, unit, fmt, good, _d = ana.BODY_META[col]
+                    s_ = _bd_home[col].dropna() if col in _bd_home.columns \
+                        else pd.Series(dtype=float)
+                    if s_.empty:
+                        return None
+                    prev = s_.iloc[-5:-1]
+                    dv = float(s_.iloc[-1] - prev.mean()) if len(prev) else np.nan
+                    sub = (None if not np.isfinite(dv) else
+                           f"{dv:+{_pyfmt(fmt)}} (이전 {len(prev)}회 평균 대비)")
+                    tone = ("" if (good == 0 or not np.isfinite(dv) or dv == 0)
+                            else ("ok" if dv * good > 0 else "warn"))
+                    return {"label": name, "value": format(float(s_.iloc[-1]), fmt),
+                            "unit": unit or None, "sub": sub, "tone": tone,
+                            "spark": [float(x) for x in s_.tail(30)]}
+
+                _bt = [t for t in (_btile("WeightKg"), _btile("BodyFatPct"),
+                                   _btile("SkeletalMuscleKg"), _btile("BodyFatKg"))
+                       if t]
+                if _bt:
+                    ui.tiles(_bt, per_row_pc=2)
+                card_link("✍️ 기록 · ⚖️ 체중 · 체성분")
+    with _g3[1 % len(_g3)]:
+        with ui.card("gpred"):
+            ui.head("🏁 가민 레이스 예측", gdate("Pred10K"))
+            preds = ana.garmin_race_predictions(G)
+            if any(v != "—" for _, v in preds):
+                ui.rows(preds)
+            else:
+                st.caption("Garmin Connect의 레이스 예측 시간을 "
+                           "‘✍️ 기록 → 📈 가민 측정’에 입력하세요.")
+            card_link("📊 분석 · ⌚ 가민 추이 · 레이스 예측 추이")
 
     # ─────────────────────────────────────────────────────────────────
-    # 가민 · Load Focus / 레이스 예측
+    # 가민 · Load Focus (레이스 예측은 위 '몸' 카드 옆으로 옮겼습니다)
     # ─────────────────────────────────────────────────────────────────
-    d2 = ui.cols(2, 1)
-    with d2[0]:
+    if True:
         with ui.card("gfocus"):
             ui.head("🎚️ 가민 Load Focus", "최근 4주 부하의 성격 분포")
             fo = ana.load_focus(G)
@@ -1772,15 +1874,6 @@ with tab_today:
                             unsafe_allow_html=True)
             else:
                 st.caption("‘✍️ 기록 → 📈 가민 측정’에서 Load Focus 3개 값을 입력하세요.")
-
-    with d2[1 % len(d2)]:
-        with ui.card("gpred"):
-            ui.head("🏁 가민 레이스 예측", gdate("Pred10K"))
-            preds = ana.garmin_race_predictions(G)
-            if any(v != "—" for _, v in preds):
-                ui.rows(preds)
-            else:
-                st.caption("Garmin Connect의 레이스 예측 시간을 주간 지표에 입력하세요.")
 
     # ─────────────────────────────────────────────────────────────────
     # 계산 지표 (보조) — 기록으로부터 직접 산출
@@ -3844,9 +3937,21 @@ with tab_ana:
         if not chg.empty:
             with ui.card("zlthr"):
                 ui.head("🧪 적용된 프로필", "훈련 시점마다 그때의 값으로 존을 매깁니다")
+                # 심박 기준값이 실제로 바뀐 시점만 — 같은 값이 반복되면 접습니다
+                _hr3 = ["LTHR", "HRMax", "HRRest"]
+                _c2 = chg[["Date"] + _hr3].copy()
+                _same = _c2[_hr3].round(3).eq(_c2[_hr3].round(3).shift()).all(axis=1)
+                if len(_same):
+                    _same.iloc[0] = False
+                _c2 = _c2[~_same]
                 ui.rows([(f"{r.Date:%Y-%m-%d} 이후",
                           f"LTHR {r.LTHR:.0f} · 최대 {r.HRMax:.0f} · 안정시 {r.HRRest:.0f}")
-                         for r in chg.itertuples()])
+                         for r in _c2.itertuples()])
+                _dupe = len(chg) - len(_c2)
+                if _dupe:
+                    st.caption(f"심박 기준값이 그대로인 줄 {_dupe}개는 접었습니다 — "
+                               "‘⚙️ 설정 → 기준값 이력 수정 / 삭제’ 아래의 "
+                               "**중복 이력 정리**로 아예 지울 수 있습니다.")
 
         tbl = ana.zone_table(zoned, bounds, days_z, ZM)
         if tbl.empty:
@@ -4211,9 +4316,24 @@ with tab_ana:
                     "훈련 유형 (비우면 전체)", _types_all, default=[], key="wt_types",
                     help="하나만 고르면 ‘같은 종류의 훈련이 어떻게 변해왔나’가 되고, "
                          "비워 두면 전체 흐름이 됩니다.")
+                # 보조선 설정 — 한 줄에 셋
+                _lr = ui.cols(3, 1, keep_row=True)
+                _ma_lab = _lr[0].selectbox(
+                    "이동평균", list(ana.MA_WINDOWS), index=2, key="wt_ma",
+                    help="‘몇 회’가 아니라 **며칠**로 셉니다. 훈련 빈도가 주마다 "
+                         "달라서 ‘4회 평균’은 어떤 주엔 사흘치, 어떤 주엔 2주치가 "
+                         "돼 버립니다.")
+                _show_avg = _lr[1 % len(_lr)].checkbox(
+                    "기간 평균선", value=True, key="wt_avg",
+                    help="고른 기간 전체의 평균 — 회색 가로 파선")
+                _show_tr = _lr[2 % len(_lr)].checkbox(
+                    "추세선", value=True, key="wt_trend",
+                    help="이 기간의 직선 추세 — 주황. 거리·상승고도·TE처럼 "
+                         "그날 훈련 설계로 정해지는 값에는 그리지 않습니다.")
                 _wt = ana.workout_trend(df_w, db.load_data("Laps"),
                                         start=_wt_s, end=_wt_e,
-                                        types=_tsel or None)
+                                        types=_tsel or None,
+                                        ma_days=ana.MA_WINDOWS[_ma_lab])
                 _wav = ana.workout_trend_available(_wt)
                 if not _wav:
                     st.caption("이 조건에 맞는 훈련이 없습니다. 기간이나 유형을 바꿔보세요.")
@@ -4228,13 +4348,26 @@ with tab_ana:
                     if not _wkeys:
                         st.caption("지표를 하나 이상 골라주세요.")
                     else:
-                        _wch = workout_trend_charts(_wt, _wkeys, multi=len(_tsel) != 1)
+                        _wch = workout_trend_charts(
+                            _wt, _wkeys, multi=len(_tsel) != 1,
+                            ma_label=_ma_lab, show_avg=_show_avg,
+                            show_trend=_show_tr)
                         if _wch:
                             stacked_charts(_wch)
-                        st.caption(f"점 = 훈련 한 건 · 선 = 최근 4회 이동평균 "
-                                   f"({len(_wt)}건" +
-                                   (f" · {', '.join(_tsel)}" if _tsel else " · 전체 유형") +
-                                   ") · 페이스는 위쪽이 빠릅니다.")
+                        _leg = ["점 = 훈련 한 건"]
+                        if _ma_lab != "없음":
+                            _leg.append(f"<b>먹색</b> = {_ma_lab} 이동평균")
+                        if _show_avg:
+                            _leg.append("<b>회색 파선</b> = 기간 평균")
+                        if _show_tr:
+                            _leg.append("<b>주황</b> = 추세")
+                        st.markdown(
+                            "<p class='rl-sub' style='margin:2px 0 0'>"
+                            + " · ".join(_leg)
+                            + f" · {len(_wt)}건"
+                            + (f" · {', '.join(_tsel)}" if _tsel else " · 전체 유형")
+                            + " · 페이스는 위쪽이 빠릅니다</p>",
+                            unsafe_allow_html=True)
                 with st.expander("❓ 각 지표가 무슨 뜻인가요"):
                     st.markdown("\n\n".join(
                         f"**{ana.WORKOUT_TREND_LABEL[c]}** — {desc}"
@@ -4243,7 +4376,18 @@ with tab_ana:
                         "\n\n---\n\n**읽는 요령** — 폼·페이스 지표는 "
                         "**페이스가 빨라지면 저절로 좋아집니다.** 그래서 유형을 섞어 보면 "
                         "‘그날 무슨 훈련을 했나’만 보입니다. 유형을 **하나로 좁히고**, "
-                        "한두 점이 아니라 **몇 주 흐름**으로 판단하세요.")
+                        "한두 점이 아니라 **몇 주 흐름**으로 판단하세요.\n\n"
+                        "**세 선의 차이** — 이동평균은 *최근 N일이 어떤가*, "
+                        "기간 평균은 *이 기간의 기준선*, 추세선은 *기간 전체가 "
+                        "어느 방향인가*를 말합니다. 추세선은 **직선 하나**라서 "
+                        "중간의 굴곡(부상·더위·대회)을 지워 버립니다 — 방향만 "
+                        "보고, 이유는 이동평균에서 찾으세요.\n\n"
+                        "추세선은 " + ", ".join(
+                            n for c, n, *_ in ana.WORKOUT_TREND_METRICS
+                            if c in ana.TREND_LINE_OK)
+                        + " 에만 그립니다. 거리·시간·상승고도·TE·운동 부하는 "
+                        "그날 훈련을 어떻게 짰느냐로 정해지는 값이라 직선을 "
+                        "그으면 뜻이 없습니다.")
 
             with ui.card("cal"):
                 ui.head("🗓️ 훈련 달력", "진할수록 긴 거리")
@@ -4688,27 +4832,44 @@ with tab_set:
                                                     fnum(ATH.get("StartWeightKg"), 70.0), 0.1)
                 a_bf = p3[2 % len(p3)].number_input(
                     "체지방률 (%)", 0.0, 60.0, fnum(LAST_BODYFAT, 0.0), 0.1,
-                    help="모르면 0으로 두세요. 0이면 기록하지 않습니다.")
+                    help="여기 값은 표시용입니다. 주기적인 측정 이력은 "
+                         "‘✍️ 기록 → ⚖️ 체중 · 체성분’에 쌓입니다.")
+                st.caption("⚖️ **체중·체지방률의 이력**은 여기가 아니라 "
+                           "‘✍️ 기록 → ⚖️ 체중 · 체성분’ 탭에 쌓입니다. "
+                           "이 칸은 현재 값 표시용이고, 아래 **변경 이력은 "
+                           "심박 기준값(안정시·최대·LTHR)이 바뀔 때만** 남습니다.")
                 if st.form_submit_button("저장", width="stretch", type="primary"):
                     db.save_athlete({"Name": a_name, "Sex": a_sex, "HeightCm": a_h,
                                      "BirthDate": f"{int(a_by)}-01-01",
                                      "HRRest": a_rest, "HRMax": a_max, "LTHR": a_lt,
                                      "CurrentWeightKg": a_w, "StartWeightKg": a_sw})
-                    # 수치가 바뀐 경우에만 변경 이력 한 줄 추가
-                    prev = {"HRRest": HR_REST, "HRMax": HR_MAX,
-                            "LTHR": ana.resolve_lthr(LTHR, HR_MAX),
-                            "WeightKg": fnum(ATH.get("CurrentWeightKg"), 0),
-                            "BodyFatPct": fnum(LAST_BODYFAT, 0)}
+                    # 수치가 바뀐 경우에만 변경 이력 한 줄 추가.
+                    # 비교 대상은 '적용일 시점에 실제로 적용되던 값'입니다 —
+                    # 현재 프로필과 비교하면 같은 값이 계속 한 줄씩 쌓입니다.
+                    _hb = ana.profile_history(db.load_data("Metrics"), PROFILE_NOW)
+                    _hb = _hb[_hb["Date"] <= pd.Timestamp(eff)]
+                    _base = (_hb.iloc[-1] if not _hb.empty else {})
+                    prev = {k: fnum(_base.get(k) if hasattr(_base, "get")
+                                    else np.nan, 0)
+                            for k in ("HRRest", "HRMax", "LTHR", "WeightKg",
+                                      "BodyFatPct")}
                     now = {"HRRest": a_rest, "HRMax": a_max, "LTHR": a_lt,
                            "WeightKg": a_w, "BodyFatPct": a_bf}
-                    if any(abs(fnum(now[k]) - fnum(prev.get(k))) > 0.001 for k in now):
+                    # 체지방률을 0(미입력)으로 둔 채 저장했다고 예전 값을 '바뀐 것'
+                    # 으로 보지 않습니다
+                    # 이력 줄은 **심박 기준값(안정시·최대·LTHR)이 바뀔 때만**
+                    # 남깁니다. 체중·체지방률은 매주 재는 값이라 여기에 쌓으면
+                    # '적용된 프로필'이 같은 심박 값으로 수십 줄이 됩니다 —
+                    # 그 이력은 '⚖️ 체중 · 체성분' 탭(Body 시트)이 갖습니다.
+                    _cmp = ["HRRest", "HRMax", "LTHR"]
+                    if any(abs(fnum(now[k]) - fnum(prev.get(k))) > 0.001 for k in _cmp):
                         db.append_rows("Metrics", pd.DataFrame([{
                             "MetricID": new_id("MET"),
                             "MetricDate": eff.strftime("%Y-%m-%d"),
                             "HRRest": a_rest, "HRMax": a_max, "LTHR": a_lt,
-                            "WeightKg": a_w, "BodyFatPct": a_bf or "",
                             "Notes": PROFILE_ROW_NOTE}]))
-                        st.success(f"저장 완료 — {eff:%Y-%m-%d}부터 적용되는 변경 이력을 남겼습니다")
+                        st.success(f"저장 완료 — {eff:%Y-%m-%d}부터 적용되는 "
+                                   "심박 기준값 변경 이력을 남겼습니다")
                     else:
                         st.success("저장 완료")
                     st.rerun()
@@ -4828,6 +4989,40 @@ with tab_set:
                  "이력에 쓰이므로 여기 같이 나옵니다 — 그 줄을 삭제하면 같은 줄의 "
                  "가민 값(VO₂max 등)도 함께 사라집니다.",
             empty_msg="아직 기준값 이력이 없습니다. 위에서 적용일과 함께 저장하면 생깁니다.")
+
+        # ── 중복 이력 정리 — 심박 기준값이 그대로인 '프로필 변경' 줄 지우기 ──
+        _dfm = db.load_data("Metrics")
+        _pf = only_profile_rows(_dfm).copy()
+        _dupe_ids = []
+        if not _pf.empty:
+            _pf["_d"] = pd.to_datetime(_pf["MetricDate"], errors="coerce")
+            _pf = _pf.dropna(subset=["_d"]).sort_values("_d")
+            _hr3 = ["HRRest", "HRMax", "LTHR"]
+            _prev = None
+            for _, _r in _pf.iterrows():
+                _cur = tuple(round(fnum(_r.get(k)), 3) for k in _hr3)
+                # 가민 측정값이 같이 들어 있는 줄은 지우면 다른 값도 날아갑니다
+                _pure = (str(_r.get("Notes") or "").strip() == PROFILE_ROW_NOTE
+                         and not bool(has_measure_values(pd.DataFrame([_r])).iloc[0]))
+                if _prev is not None and _cur == _prev and _pure:
+                    _dupe_ids.append(str(_r["MetricID"]))
+                else:
+                    _prev = _cur
+        if _dupe_ids:
+            with ui.card("profdupe"):
+                ui.head("🧹 중복 이력 정리",
+                        f"심박 기준값이 <b>그대로인</b> ‘프로필 변경’ 줄이 "
+                        f"{len(_dupe_ids)}개 있습니다")
+                st.caption("저장 버튼을 누를 때마다 같은 값이 한 줄씩 쌓인 것들입니다. "
+                           "지워도 존·부하 계산 결과는 달라지지 않습니다 "
+                           "(어차피 같은 값이라서요). 가민 측정값이 함께 들어 있는 "
+                           "줄은 대상에서 빼 뒀습니다.")
+                if st.button(f"🧹 {len(_dupe_ids)}줄 지우기", width="stretch",
+                             key="prof_dupe_go"):
+                    db.write_sheet("Metrics",
+                                   _dfm[~_dfm["MetricID"].astype(str).isin(_dupe_ids)])
+                    st.success(f"{len(_dupe_ids)}줄을 지웠습니다.")
+                    st.rerun()
 
         if not chg_p.empty:
             pc = ui.cols(2, 1)
