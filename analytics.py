@@ -1041,7 +1041,8 @@ WORKOUT_TREND_DEFAULT = ["PaceSec", "AvgHeartRate", "EF", "AvgVertRatioPct"]
 
 
 def workout_trend(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
-                  days: int | None = None, types=None, ma: int = 4) -> pd.DataFrame:
+                  days: int | None = None, types=None, ma: int = 4,
+                  start=None, end=None) -> pd.DataFrame:
     """훈련 한 건 = 한 점. 기간·유형으로 거른 뒤 지표별 이동평균까지 붙여 돌려줍니다.
 
     이동평균은 **거르고 남은 것들**을 시간순으로 계산합니다. 유형을 하나로 좁혀서
@@ -1049,7 +1050,14 @@ def workout_trend(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
     d = prepare_workouts(df_work)
     if d.empty:
         return pd.DataFrame()
-    if days:
+    # start/end 가 있으면 그쪽이 우선 (직접 지정한 기간)
+    if start is not None or end is not None:
+        if start is not None:
+            d = d[d["WorkoutDate"] >= pd.Timestamp(start)]
+        if end is not None:
+            d = d[d["WorkoutDate"] <= pd.Timestamp(end)
+                  + timedelta(days=1) - timedelta(seconds=1)]
+    elif days:
         cutoff = pd.Timestamp(datetime.now()).normalize() - timedelta(days=days - 1)
         d = d[d["WorkoutDate"] >= cutoff]
     if types:
