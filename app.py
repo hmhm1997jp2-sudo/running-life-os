@@ -760,6 +760,55 @@ def seg(label, options, key, default=None, help=None, collapsed=True):
                            label_visibility=vis)
 
 
+CUSTOM_RANGE = "직접 지정"
+
+
+def range_picker(key: str, default: str = "3개월", label: str = "기간"):
+    """‘최근 N일’ 버튼 + <직접 지정> 날짜 범위. 모든 추이 화면이 같은 것을 씁니다.
+
+    반환: (시작일, 종료일, 설명문) — 둘 다 None 이면 전체 기간입니다.
+    """
+    sel = seg(label, list(RANGE_DAYS) + [CUSTOM_RANGE], key + "_sel", default)
+    today = date.today()
+    if sel == CUSTOM_RANGE:
+        _d0 = st.session_state.get(key + "_rng") or (today - timedelta(days=89), today)
+        try:
+            picked = st.date_input("시작 ~ 끝", _d0, key=key + "_rng",
+                                   label_visibility="collapsed",
+                                   help="시작일과 종료일을 차례로 고르세요.")
+        except Exception:
+            picked = (today - timedelta(days=89), today)
+        # 끝 날짜를 아직 안 고르면 튜플 길이가 1입니다 — 그때는 시작일만 씁니다
+        if isinstance(picked, (tuple, list)):
+            s = picked[0] if picked else today - timedelta(days=89)
+            e = picked[1] if len(picked) > 1 else today
+        else:
+            s, e = picked, today
+        if s > e:
+            s, e = e, s
+        return (pd.Timestamp(s), pd.Timestamp(e),
+                f"{s:%Y-%m-%d} ~ {e:%Y-%m-%d} · {(e - s).days + 1}일")
+    n = RANGE_DAYS[sel]
+    if n is None:
+        return None, None, "전체 기간"
+    s = today - timedelta(days=n - 1)
+    return pd.Timestamp(s), pd.Timestamp(today), f"최근 {n}일 ({s:%Y-%m-%d} ~)"
+
+
+def clip_range(df, datecol, start, end):
+    """고른 기간으로 자릅니다. start/end 가 None 이면 그대로 둡니다."""
+    if df is None or df.empty or datecol not in df.columns:
+        return df
+    d = df.copy()
+    d[datecol] = pd.to_datetime(d[datecol], errors="coerce")
+    d = d.dropna(subset=[datecol])
+    if start is not None:
+        d = d[d[datecol] >= start]
+    if end is not None:
+        d = d[d[datecol] <= end + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)]
+    return d
+
+
 X_HIDDEN = alt.Axis(labels=False, title=None, grid=False, domain=False, ticks=False)
 
 
@@ -1558,127 +1607,144 @@ with tab_today:
     else:
         _wow_sub, _wow_tone = None, ""
 
-    section("이번 주 · 내가 넣은 기록",
-            f"{_wk_start:%m/%d} 시작 · " +
-            ("마지막 날" if _left == 0 else f"{_left}일 남음"))
-    ui.tiles([
-        {"label": "이번 주 거리", "value": f"{_wk('Distance'):.1f}", "unit": "km",
-         "sub": _wow_sub, "tone": _wow_tone, "spark": _wk_spark},
-        {"label": "훈련 횟수", "value": f"{_wk('Runs'):.0f}", "unit": "회",
-         "sub": (f"평균 {_wk('Distance') / max(_wk('Runs'), 1):.1f}km"
-                 if _wk("Runs") else "아직 없음")},
-        {"label": "가장 긴 런", "value": f"{_wk('LongRun'):.1f}", "unit": "km",
-         "sub": (f"주간 거리의 {_wk('LongRun') / _wk('Distance') * 100:.0f}%"
-                 if _wk("Distance") > 0 else None)},
-        {"label": "이번 주 시간", "value": ana.time_str(_wk("Minutes") * 60),
-         "sub": (f"평균 {ana.pace_str(_wk('Minutes') * 60 / _wk('Distance'))}"
-                 if _wk("Distance") > 0 else None)},
-    ])
-
     # ─────────────────────────────────────────────────────────────────
-    # 타일 — 부하 / 컨디션 / 기량
+    # 홈 카드 그리드 — PC 2단, 모바일 1단 (가민 Connect 웹과 같은 구성)
+    # 예전에는 네 묶음이 전체 폭 타일 띠로 세로로 길게 늘어져 있었습니다.
     # ─────────────────────────────────────────────────────────────────
-    _load_keys = ["AcuteLoad", "LoadRatio", "RecoveryTimeHr", "IntensityMinutes"]
-    section("가민 · 트레이닝 부하 (본 시점의 값)", seen_at(_load_keys))
-    _ch_v = pd.to_numeric(G.get("ChronicLoad"), errors="coerce")
-    _al_s, _al_t = aged("AcuteLoad",
-                        (f"만성 {_ch_v:,.0f}" if np.isfinite(_ch_v) and _ch_v > 0
-                         else None))
-    if _lr_src == "계산":
-        # 계산값은 급성·만성을 본 시점의 값이라 '며칠 전' 표시가 따로 필요 없습니다
-        _lr_s, _lr_t = "급성÷만성", lr_tone
-    elif _lr_src == "만성 부하 필요":
-        _lr_s, _lr_t = "만성 부하를 넣으면 계산됩니다", "warn"
-    else:
-        _lr_s, _lr_t = aged("LoadRatio", lr_txt, lr_tone)
-    _rc_s, _rc_t = (rc_txt, rc_tone) if rc_live else aged("RecoveryTimeHr", rc_txt, rc_tone)
-    _im_s, _im_t = aged("IntensityMinutes")
-    ui.tiles([
-        {"label": "단기 부하 (7일 누적)", "value": gv("AcuteLoad", "{:,.0f}"),
-         "sub": _al_s, "tone": _al_t,
-         "spark": hist_series(df_daily, "StatusDate", "AcuteLoad")},
-        {"label": "부하 비율", "value": (f"{_lr_val:.2f}" if np.isfinite(_lr_val) else "—"),
-         "sub": _lr_s, "tone": _lr_t,
-         "spark": hist_series(df_daily, "StatusDate", "LoadRatio")},
-        {"label": "회복 시간" + (" (지금 기준)" if rc_live else ""),
-         "value": f"{rc_left:.0f}" if np.isfinite(rc_left) else "—", "unit": "시간",
-         "sub": _rc_s, "tone": _rc_t,
-         "spark": hist_series(df_daily, "StatusDate", "RecoveryTimeHr")},
-        {"label": "주간 고강도", "value": gv("IntensityMinutes", "{:,.0f}"), "unit": "분",
-         "sub": _im_s, "tone": _im_t,
-         "spark": hist_series(df_daily, "StatusDate", "IntensityMinutes")},
-    ])
+    _g1 = ui.cols(2, 1)
+    with _g1[0]:
+        with ui.card("wkcard"):
+            ui.head("🏃 이번 주 · 내가 넣은 기록",
+                    f"{_wk_start:%m/%d} 시작 · " +
+                    ("마지막 날" if _left == 0 else f"{_left}일 남음"))
+            ui.tiles([
+                {"label": "이번 주 거리", "value": f"{_wk('Distance'):.1f}", "unit": "km",
+                 "sub": _wow_sub, "tone": _wow_tone, "spark": _wk_spark},
+                {"label": "훈련 횟수", "value": f"{_wk('Runs'):.0f}", "unit": "회",
+                 "sub": (f"평균 {_wk('Distance') / max(_wk('Runs'), 1):.1f}km"
+                         if _wk("Runs") else "아직 없음")},
+                {"label": "가장 긴 런", "value": f"{_wk('LongRun'):.1f}", "unit": "km",
+                 "sub": (f"주간 거리의 {_wk('LongRun') / _wk('Distance') * 100:.0f}%"
+                         if _wk("Distance") > 0 else None)},
+                {"label": "이번 주 시간", "value": ana.time_str(_wk("Minutes") * 60),
+                 "sub": (f"평균 {ana.pace_str(_wk('Minutes') * 60 / _wk('Distance'))}"
+                         if _wk("Distance") > 0 else None)},
+            ], per_row_pc=2)
 
-    # 컨디션은 '그날 아침' 값이라 하루만 지나도 오늘 상태가 아닙니다 → 1일부터 표시
-    _cond_keys = ["BodyBattery", "TrainingReadiness", "HRVms", "SleepScore"]
-    section("가민 · 컨디션 (밤사이 확정되는 값)", date_span(_cond_keys))
-    _bb_s, _bb_t = aged("BodyBattery", stale=1)
-    _tr_s, _tr_t = aged("TrainingReadiness", stale=1)
-    _hv_s, _hv_t = aged("HRVms", hrv_status or None, hrv_tone, stale=1)
-    _sl_s, _sl_t = aged("SleepScore", stale=1)
-    ui.tiles([
-        {"label": "Body Battery", "value": gv("BodyBattery", "{:.0f}"),
-         "sub": _bb_s, "tone": _bb_t,
-         "spark": hist_series(df_daily, "StatusDate", "BodyBattery")},
-        {"label": "Readiness", "value": gv("TrainingReadiness", "{:.0f}"),
-         "sub": _tr_s, "tone": _tr_t,
-         "spark": hist_series(df_daily, "StatusDate", "TrainingReadiness")},
-        {"label": "HRV", "value": gv("HRVms", "{:.0f}"), "unit": "ms",
-         "sub": _hv_s, "tone": _hv_t,
-         "spark": hist_series(df_daily, "StatusDate", "HRVms")},
-        {"label": "수면 점수", "value": gv("SleepScore", "{:.0f}"),
-         "sub": _sl_s, "tone": _sl_t,
-         "spark": hist_series(df_daily, "StatusDate", "SleepScore")},
-    ])
-    if any(gage(k) is not None and gage(k) >= 1 for k in _cond_keys):
-        st.caption("⚠️ 컨디션 값은 **그날 아침** 기준입니다. 날짜가 지난 값은 오늘 상태가 "
-                   "아니니, ‘✍️ 기록 → ⌚ 가민 일일’에서 오늘 값을 넣어주세요.")
-    st.caption("타일 안의 작은 선은 **최근 30회 입력분**입니다 (마우스를 올리면 날짜별 값). "
-               "더 긴 추세는 ‘📊 분석 → ⌚ 가민 추이’ 탭에서 기간을 골라 보세요.")
 
-    em = ana.endurance_meta(G.get("EnduranceScore"), AGE, SEX)
-    hm = ana.hill_meta(G.get("HillScore"))
-    lt_txt = str(G.get("LTPace") or "")
-    # 기량 지표는 주 1회 갱신이라 며칠 지난 것이 정상 → 14일부터 표시
-    _fit_keys = ["VO2Max", "FitnessAge", "EnduranceScore", "HillScore"]
-    section("가민 · 기량", date_span(_fit_keys))
-    _v_s, _v_t = aged("VO2Max", (f"젖산역치 {lt_txt}" if lt_txt else None), stale=14)
-    _fa_s, _fa_t = aged("FitnessAge", stale=14)
-    _en_s, _en_t = aged("EnduranceScore", em["kr"], em["tone"], stale=14)
-    _hl_s, _hl_t = aged("HillScore", hm["kr"], hm["tone"], stale=14)
-    ui.tiles([
-        {"label": "VO₂max", "value": gv("VO2Max", "{:.1f}"),
-         "sub": _v_s, "tone": _v_t,
-         "spark": hist_series(df_metrics, "MetricDate", "VO2Max")},
-        {"label": "피트니스 나이", "value": gv("FitnessAge", "{:g}"), "unit": "세",
-         "sub": _fa_s, "tone": _fa_t,
-         "spark": hist_series(df_metrics, "MetricDate", "FitnessAge")},
-        {"label": "Endurance", "value": gv("EnduranceScore", "{:,.0f}"),
-         "sub": _en_s, "tone": _en_t,
-         "spark": hist_series(df_metrics, "MetricDate", "EnduranceScore")},
-        {"label": "Hill Score", "value": gv("HillScore", "{:.0f}"),
-         "sub": _hl_s, "tone": _hl_t,
-         "spark": hist_series(df_metrics, "MetricDate", "HillScore")},
-    ])
-    # 버튼을 각자 설명하는 타일 바로 아래에 둡니다 (3번째·4번째 칸)
-    pop = ui.cols(4, 1)
-    with pop[2 % len(pop)].popover("ℹ️ Endurance 등급"):
-        st.markdown(tier_help_html(
-            em,
-            "<b>Endurance Score (지구력 점수)</b> — 심박이 기록된 모든 활동을 "
-            "누적해서 <i>장시간 버티는 능력</i>을 점수로 매긴 값입니다. "
-            "VO₂max가 ‘엔진 크기’라면 이건 ‘연료탱크’에 가깝습니다. "
-            "롱런·저강도 볼륨을 꾸준히 쌓으면 올라가고, 며칠 쉬어도 "
-            "잘 안 떨어집니다.",
-            "등급 기준이 나이대·성별마다 다릅니다."), unsafe_allow_html=True)
-    with pop[3 % len(pop)].popover("ℹ️ Hill Score 등급"):
-        st.markdown(tier_help_html(
-            hm,
-            "<b>Hill Score (언덕 점수)</b> — <i>오르막 달리기 능력</i>을 1~100으로 "
-            "매긴 값입니다. <b>경사 2% 이상</b> 구간이 있는 야외 러닝/걷기/하이킹만 "
-            "집계되고, 최근 2개월 훈련 이력과 VO₂max 추정치를 씁니다. "
-            "평지나 트레드밀 위주로 뛰면 아예 안 뜨거나 한참 뒤에 생깁니다.",
-            "나이·성별 구분 없이 같은 기준입니다."), unsafe_allow_html=True)
+    with _g1[1 % len(_g1)]:
+        with ui.card("loadcard"):
+            # ─────────────────────────────────────────────────────────────────
+            # 타일 — 부하 / 컨디션 / 기량
+            # ─────────────────────────────────────────────────────────────────
+            _load_keys = ["AcuteLoad", "LoadRatio", "RecoveryTimeHr", "IntensityMinutes"]
+            ui.head("📊 가민 · 트레이닝 부하", "본 시점의 값 · " + seen_at(_load_keys))
+            _ch_v = pd.to_numeric(G.get("ChronicLoad"), errors="coerce")
+            _al_s, _al_t = aged("AcuteLoad",
+                                (f"만성 {_ch_v:,.0f}" if np.isfinite(_ch_v) and _ch_v > 0
+                                 else None))
+            if _lr_src == "계산":
+                # 계산값은 급성·만성을 본 시점의 값이라 '며칠 전' 표시가 따로 필요 없습니다
+                _lr_s, _lr_t = "급성÷만성", lr_tone
+            elif _lr_src == "만성 부하 필요":
+                _lr_s, _lr_t = "만성 부하를 넣으면 계산됩니다", "warn"
+            else:
+                _lr_s, _lr_t = aged("LoadRatio", lr_txt, lr_tone)
+            _rc_s, _rc_t = (rc_txt, rc_tone) if rc_live else aged("RecoveryTimeHr", rc_txt, rc_tone)
+            _im_s, _im_t = aged("IntensityMinutes")
+            ui.tiles([
+                {"label": "단기 부하 (7일 누적)", "value": gv("AcuteLoad", "{:,.0f}"),
+                 "sub": _al_s, "tone": _al_t,
+                 "spark": hist_series(df_daily, "StatusDate", "AcuteLoad")},
+                {"label": "부하 비율", "value": (f"{_lr_val:.2f}" if np.isfinite(_lr_val) else "—"),
+                 "sub": _lr_s, "tone": _lr_t,
+                 "spark": hist_series(df_daily, "StatusDate", "LoadRatio")},
+                {"label": "회복 시간" + (" (지금 기준)" if rc_live else ""),
+                 "value": f"{rc_left:.0f}" if np.isfinite(rc_left) else "—", "unit": "시간",
+                 "sub": _rc_s, "tone": _rc_t,
+                 "spark": hist_series(df_daily, "StatusDate", "RecoveryTimeHr")},
+                {"label": "주간 고강도", "value": gv("IntensityMinutes", "{:,.0f}"), "unit": "분",
+                 "sub": _im_s, "tone": _im_t,
+                 "spark": hist_series(df_daily, "StatusDate", "IntensityMinutes")},
+            ], per_row_pc=2)
+
+    _g2 = ui.cols(2, 1)
+    with _g2[0]:
+        with ui.card("condcard"):
+            # 컨디션은 '그날 아침' 값이라 하루만 지나도 오늘 상태가 아닙니다 → 1일부터 표시
+            _cond_keys = ["BodyBattery", "TrainingReadiness", "HRVms", "SleepScore"]
+            ui.head("🌙 가민 · 컨디션", "밤사이 확정되는 값 · " + date_span(_cond_keys))
+            _bb_s, _bb_t = aged("BodyBattery", stale=1)
+            _tr_s, _tr_t = aged("TrainingReadiness", stale=1)
+            _hv_s, _hv_t = aged("HRVms", hrv_status or None, hrv_tone, stale=1)
+            _sl_s, _sl_t = aged("SleepScore", stale=1)
+            ui.tiles([
+                {"label": "Body Battery", "value": gv("BodyBattery", "{:.0f}"),
+                 "sub": _bb_s, "tone": _bb_t,
+                 "spark": hist_series(df_daily, "StatusDate", "BodyBattery")},
+                {"label": "Readiness", "value": gv("TrainingReadiness", "{:.0f}"),
+                 "sub": _tr_s, "tone": _tr_t,
+                 "spark": hist_series(df_daily, "StatusDate", "TrainingReadiness")},
+                {"label": "HRV", "value": gv("HRVms", "{:.0f}"), "unit": "ms",
+                 "sub": _hv_s, "tone": _hv_t,
+                 "spark": hist_series(df_daily, "StatusDate", "HRVms")},
+                {"label": "수면 점수", "value": gv("SleepScore", "{:.0f}"),
+                 "sub": _sl_s, "tone": _sl_t,
+                 "spark": hist_series(df_daily, "StatusDate", "SleepScore")},
+            ], per_row_pc=2)
+            if any(gage(k) is not None and gage(k) >= 1 for k in _cond_keys):
+                st.caption("⚠️ 컨디션 값은 **그날 아침** 기준입니다. 날짜가 지난 값은 오늘 상태가 "
+                           "아니니, ‘✍️ 기록 → ⌚ 가민 일일’에서 오늘 값을 넣어주세요.")
+            st.caption("타일 안의 작은 선은 **최근 30회 입력분**입니다 (마우스를 올리면 날짜별 값). "
+                       "더 긴 추세는 ‘📊 분석 → ⌚ 가민 추이’ 탭에서 기간을 골라 보세요.")
+
+
+    with _g2[1 % len(_g2)]:
+        with ui.card("fitcard"):
+            em = ana.endurance_meta(G.get("EnduranceScore"), AGE, SEX)
+            hm = ana.hill_meta(G.get("HillScore"))
+            lt_txt = str(G.get("LTPace") or "")
+            # 기량 지표는 주 1회 갱신이라 며칠 지난 것이 정상 → 14일부터 표시
+            _fit_keys = ["VO2Max", "FitnessAge", "EnduranceScore", "HillScore"]
+            ui.head("🏅 가민 · 기량", date_span(_fit_keys))
+            _v_s, _v_t = aged("VO2Max", (f"젖산역치 {lt_txt}" if lt_txt else None), stale=14)
+            _fa_s, _fa_t = aged("FitnessAge", stale=14)
+            _en_s, _en_t = aged("EnduranceScore", em["kr"], em["tone"], stale=14)
+            _hl_s, _hl_t = aged("HillScore", hm["kr"], hm["tone"], stale=14)
+            ui.tiles([
+                {"label": "VO₂max", "value": gv("VO2Max", "{:.1f}"),
+                 "sub": _v_s, "tone": _v_t,
+                 "spark": hist_series(df_metrics, "MetricDate", "VO2Max")},
+                {"label": "피트니스 나이", "value": gv("FitnessAge", "{:g}"), "unit": "세",
+                 "sub": _fa_s, "tone": _fa_t,
+                 "spark": hist_series(df_metrics, "MetricDate", "FitnessAge")},
+                {"label": "Endurance", "value": gv("EnduranceScore", "{:,.0f}"),
+                 "sub": _en_s, "tone": _en_t,
+                 "spark": hist_series(df_metrics, "MetricDate", "EnduranceScore")},
+                {"label": "Hill Score", "value": gv("HillScore", "{:.0f}"),
+                 "sub": _hl_s, "tone": _hl_t,
+                 "spark": hist_series(df_metrics, "MetricDate", "HillScore")},
+            ], per_row_pc=2)
+            # 버튼을 각자 설명하는 타일 바로 아래에 둡니다 (3번째·4번째 칸)
+            pop = ui.cols(2, 1)
+            with pop[0].popover("ℹ️ Endurance 등급"):
+                st.markdown(tier_help_html(
+                    em,
+                    "<b>Endurance Score (지구력 점수)</b> — 심박이 기록된 모든 활동을 "
+                    "누적해서 <i>장시간 버티는 능력</i>을 점수로 매긴 값입니다. "
+                    "VO₂max가 ‘엔진 크기’라면 이건 ‘연료탱크’에 가깝습니다. "
+                    "롱런·저강도 볼륨을 꾸준히 쌓으면 올라가고, 며칠 쉬어도 "
+                    "잘 안 떨어집니다.",
+                    "등급 기준이 나이대·성별마다 다릅니다."), unsafe_allow_html=True)
+            with pop[1 % len(pop)].popover("ℹ️ Hill Score 등급"):
+                st.markdown(tier_help_html(
+                    hm,
+                    "<b>Hill Score (언덕 점수)</b> — <i>오르막 달리기 능력</i>을 1~100으로 "
+                    "매긴 값입니다. <b>경사 2% 이상</b> 구간이 있는 야외 러닝/걷기/하이킹만 "
+                    "집계되고, 최근 2개월 훈련 이력과 VO₂max 추정치를 씁니다. "
+                    "평지나 트레드밀 위주로 뛰면 아예 안 뜨거나 한참 뒤에 생깁니다.",
+                    "나이·성별 구분 없이 같은 기준입니다."), unsafe_allow_html=True)
+
 
     # ─────────────────────────────────────────────────────────────────
     # 가민 · Load Focus / 레이스 예측
@@ -1799,9 +1865,8 @@ with tab_today:
 
     with ui.card("curve"):
         ui.head("📉 계산 부하 곡선", "CTL(체력) / ATL(피로) / TSB(폼)")
-        rsel = seg("기간", list(RANGE_DAYS), "curve_range", "3개월")
-        rn = RANGE_DAYS[rsel]
-        show = (daily if rn is None else daily.tail(rn)).reset_index(names="Date")
+        _cs, _ce, _ctxt = range_picker("curve_range", "3개월")
+        show = clip_range(daily.reset_index(names="Date"), "Date", _cs, _ce)
         if show["CTL"].sum() > 0:
             # 축이 두 개인 그래프는 쓰지 않습니다 — 두 축의 눈금을 어떻게 맞추느냐에
             # 따라 없던 상관관계가 보이기 때문입니다. 단위가 다른 TSB는 같은 날짜
@@ -2878,30 +2943,64 @@ with tab_ana:
 
         # ---- 기간 선택 (기본: 이번 주) --------------------------------------
         with ui.card("period"):
-            ui.head("🗓️ 기간", "기본은 주 단위입니다 — 날짜를 바꾸면 그 주 전체가 나옵니다")
+            ui.head("🗓️ 기간", "주 · 월은 ◀ ▶ 로 넘기고, "
+                             "<b>직접 지정</b>이면 시작~끝 날짜를 고릅니다")
             _mob = ui.is_mobile()
-            # PC는 한 줄에 [단위][◀][기준 날짜][▶][프로젝트][유형].
-            # 화살표는 좁은 칸에 넣어 작게 두고, 라벨이 없는 만큼 위 여백으로
-            # 옆 입력칸과 높이를 맞춥니다. (모바일은 한 단으로 쌓습니다)
+            _UNITS = ["주", "월", CUSTOM_RANGE, "전체"]
+            # 칸 너비는 고른 단위에 따라 달라집니다(‘직접 지정’은 넓은 칸 하나).
+            # 위젯을 만들기 전에 지난번 선택을 읽어 배치를 먼저 정합니다.
+            _pu = st.session_state.get("hist_unit", "주")
+            if _pu not in _UNITS:
+                _pu = "주"
             if _mob:
-                _c = [st] * 6
+                _c = None                       # 모바일은 줄을 나눠 씁니다
+            elif _pu == CUSTOM_RANGE:
+                _c = st.columns([0.95, 2.0, 1.25, 1.25])
+                _ui, _fi = 0, (2, 3)
+            elif _pu == "전체":
+                _c = st.columns([0.95, 1.25, 1.25])
+                _ui, _fi = 0, (1, 2)
             else:
-                _c = st.columns([1.0, 0.34, 1.2, 0.34, 1.35, 1.35])
+                _c = st.columns([0.95, 0.3, 1.15, 0.3, 1.25, 1.25])
+                _ui, _fi = 0, (4, 5)
 
-            punit = _c[0].selectbox("단위", ["주", "월", "전체"], key="hist_unit")
-            _slot = _c[2].container()      # 날짜 자리를 먼저 잡아둡니다
+            punit = (st if _mob else _c[_ui]).selectbox("단위", _UNITS,
+                                                        key="hist_unit")
 
-            if punit != "전체":
-                # 버튼은 date_input보다 먼저 '실행'되어야 세션 값을 바꿀 수 있습니다.
-                # (자리는 위에서 잡아뒀으니 화면 순서는 날짜가 가운데로 갑니다)
+            if punit == CUSTOM_RANGE:
+                _cell = st if _mob else _c[1]
+                _d0 = st.session_state.get("hist_rng") or (
+                    date.today() - timedelta(days=13), date.today())
+                _picked = _cell.date_input("시작 ~ 끝", _d0, key="hist_rng")
+                if isinstance(_picked, (tuple, list)):
+                    p_start = _picked[0] if _picked else _d0[0]
+                    # 끝 날짜를 아직 안 고른 사이에도 화면이 깨지지 않게 합니다
+                    p_end = _picked[1] if len(_picked) > 1 else p_start
+                else:
+                    p_start = p_end = _picked
+                if p_start > p_end:
+                    p_start, p_end = p_end, p_start
+            elif punit == "전체":
+                p_start = p_end = None
+            else:
+                # [◀][기준 날짜][▶]를 모바일에서도 한 줄에 — 화살표는 좁게.
+                # (Streamlit은 좁은 화면에서 컬럼을 세로로 쌓아서, ui.py의
+                #  'rlrow' CSS로 이 묶음만 가로 유지시킵니다)
+                if _mob:
+                    _nav_box = st.container(key="rlrow_histnav")
+                    with _nav_box:
+                        _row = st.columns([0.3, 1.0, 0.3])
+                else:
+                    _row = None
+                _cells = tuple(_row) if _mob else (_c[1], _c[2], _c[3])
+                _slot = _cells[1].container()      # 날짜 자리를 먼저 잡아둡니다
+                # 버튼은 date_input보다 먼저 '실행'되어야 세션 값을 바꿀 수 있습니다
                 for _cell, _lab, _n, _key, _tip in (
-                        (_c[1], "◀", -1, "hist_prev", "이전 기간"),
-                        (_c[3], "▶", +1, "hist_next", "다음 기간")):
-                    if not _mob:
-                        _cell.markdown("<div style='height:28px'></div>",
-                                       unsafe_allow_html=True)
-                    if _cell.button(_lab if not _mob else f"{_lab} {_tip}",
-                                    width="stretch", key=_key, help=_tip):
+                        (_cells[0], "◀", -1, "hist_prev", "이전 기간"),
+                        (_cells[2], "▶", +1, "hist_next", "다음 기간")):
+                    _cell.markdown("<div style='height:28px'></div>",
+                                   unsafe_allow_html=True)
+                    if _cell.button(_lab, width="stretch", key=_key, help=_tip):
                         st.session_state["hist_date"] = period_shift(
                             st.session_state.get("hist_date", date.today()), punit, _n)
                         st.rerun()
@@ -2909,12 +3008,16 @@ with tab_ana:
                     anchor = st.date_input(
                         "기준 날짜", st.session_state.get("hist_date", date.today()),
                         key="hist_date")
-            else:
-                anchor = date.today()
-            p_start, p_end = period_range(anchor, punit)
+                p_start, p_end = period_range(anchor, punit)
 
-            sel_p = _c[4].selectbox("프로젝트", ["전체"] + list(proj_opts)[1:], key="hist_p")
-            sel_t = _c[5].selectbox("유형", ["전체"] + WORKOUT_TYPES, key="hist_t")
+            if _mob:
+                with st.container(key="rlrow_histfilter"):
+                    _f = st.columns(2)
+            else:
+                _f = (_c[_fi[0]], _c[_fi[1]])
+            sel_p = _f[0].selectbox("프로젝트", ["전체"] + list(proj_opts)[1:],
+                                    key="hist_p")
+            sel_t = _f[1].selectbox("유형", ["전체"] + WORKOUT_TYPES, key="hist_t")
 
             if p_start is None:
                 st.caption("전체 기간의 기록을 봅니다.")
@@ -3452,19 +3555,12 @@ with tab_ana:
             with ui.card("gperiod"):
                 ui.head("📅 기간", "대시보드 타일은 최근 값만 보여줍니다 — "
                                  "전체 추세는 이 탭에서 봅니다")
-                g_sel = seg("기간", list(RANGE_DAYS), "garmin_range", "3개월")
-                g_n = RANGE_DAYS[g_sel]
-                if g_n is None:
-                    st.caption("전체 기간의 입력 기록을 봅니다.")
-                else:
-                    st.caption(f"최근 {g_n}일 · 입력된 날만 점으로 찍힙니다.")
+                g_s, g_e, g_txt = range_picker("garmin_range", "3개월")
+                st.caption(f"{g_txt} · 입력된 날만 점으로 찍힙니다.")
 
             def _clip(df, datecol):
                 """선택한 기간으로 자릅니다."""
-                if df.empty or g_n is None:
-                    return df
-                cut = pd.Timestamp.now().normalize() - pd.Timedelta(days=g_n - 1)
-                return df[df[datecol] >= cut]
+                return clip_range(df, datecol, g_s, g_e)
 
             def _prep(df, datecol):
                 """날짜를 만들고 기간으로 자릅니다."""
@@ -3919,15 +4015,11 @@ with tab_ana:
             with ui.card("mono"):
                 ui.head("🔁 단조로움 · 스트레인",
                         "매일 비슷하게만 달리고 있지 않은지 — <b>강약 대비</b>를 봅니다")
-                _mn_sel = seg("기간", list(RANGE_DAYS), "mono_range", "3개월")
+                _mn_s, _mn_e, _mn_txt = range_picker("mono_range", "3개월")
                 _dl = ana.daily_load_series(
                     df_w, HR_REST, HR_MAX, SEX,
                     hist=ana.profile_history(db.load_data("Metrics"), PROFILE_NOW))
-                _n = RANGE_DAYS[_mn_sel]
-                _ms = _dl.reset_index(names="날짜")
-                if _n:
-                    _ms = _ms[_ms["날짜"] >= pd.Timestamp.now().normalize()
-                              - pd.Timedelta(days=_n - 1)]
+                _ms = clip_range(_dl.reset_index(names="날짜"), "날짜", _mn_s, _mn_e)
                 _ms = _ms.dropna(subset=["Monotony"])
                 if _ms.empty:
                     st.caption("7일 이상 훈련 기록이 쌓이면 계산됩니다.")
@@ -4113,14 +4205,14 @@ with tab_ana:
                         "같은 종류의 훈련끼리 비교해야 뜻이 있습니다")
                 _wr = ui.cols(2, 1, keep_row=True)
                 with _wr[0]:
-                    _wt_sel = seg("기간", list(RANGE_DAYS), "wt_range", "6개월")
+                    _wt_s, _wt_e, _wt_txt = range_picker("wt_range", "6개월")
                 _types_all = [t for t in WORKOUT_TYPES if (df_w["WorkoutType"] == t).any()]
                 _tsel = _wr[1 % len(_wr)].multiselect(
                     "훈련 유형 (비우면 전체)", _types_all, default=[], key="wt_types",
                     help="하나만 고르면 ‘같은 종류의 훈련이 어떻게 변해왔나’가 되고, "
                          "비워 두면 전체 흐름이 됩니다.")
                 _wt = ana.workout_trend(df_w, db.load_data("Laps"),
-                                        days=RANGE_DAYS[_wt_sel],
+                                        start=_wt_s, end=_wt_e,
                                         types=_tsel or None)
                 _wav = ana.workout_trend_available(_wt)
                 if not _wav:
