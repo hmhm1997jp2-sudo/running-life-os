@@ -445,22 +445,94 @@ div[data-testid="stHorizontalBlock"] { gap:.55rem !important; }
 
 _NAV = """
 <style>
-/* ── 이동 줄 (세그먼트 두 줄) ────────────────────────────────────────────
-   탭처럼 보이되 탭이 아닙니다 — 고른 화면만 실행됩니다. 위 줄이 큰 구역,
-   아래 줄이 그 안의 화면입니다. 둘을 굵기와 색으로 구분해 둡니다. */
-[data-testid="stButtonGroup"] { margin-bottom:.15rem; }
-[data-testid="stButtonGroup"] [role="radiogroup"] { flex-wrap:wrap; gap:.25rem; }
-[data-testid="stButtonGroup"] button[data-variant="segmented_control"] {
-  border-radius:9px; font-weight:600;
+/* ── 이동 줄 ────────────────────────────────────────────────────────────
+   예전에는 항목마다 테두리 상자를 둘러서 '버튼이 잔뜩 놓인 줄'로 보였습니다.
+   위 줄은 **한 덩어리 트랙 위에 고른 것만 떠 있는** 세그먼트로, 아래 줄은
+   **밑줄 글자**로 바꿔 둘의 층위를 눈으로 구분되게 했습니다. */
+[class*="st-key-rlnav-"] [role="radiogroup"] {
+  flex-wrap:wrap; gap:2px;
 }
-/* 위 줄(큰 구역)은 조금 크게, 아래 줄(화면)은 조금 작게 */
+[class*="st-key-rlnav-"] [data-testid="stWidgetLabel"] { display:none; }
+[class*="st-key-rlnav-"] button[data-variant="segmented_control"] {
+  border:none !important; background:transparent !important;
+  box-shadow:none !important; color:var(--text-2) !important;
+  border-radius:8px !important; font-weight:600 !important;
+  letter-spacing:-.01em; transition:background .14s ease, color .14s ease;
+}
+[class*="st-key-rlnav-"] button[data-variant="segmented_control"]:hover {
+  color:var(--text) !important; background:var(--line-soft) !important;
+}
+
+/* 위 줄 — 회색 트랙 위에 흰 칩이 하나 떠 있는 모양 */
+[class*="st-key-rlnav-nav_sec"] [role="radiogroup"] {
+  background:var(--surface-2); border:1px solid var(--line);
+  border-radius:11px; padding:3px; gap:2px;
+}
 [class*="st-key-rlnav-nav_sec"] button[data-variant="segmented_control"] {
-  font-size:.92rem; padding-top:.42rem; padding-bottom:.42rem;
+  font-size:.9rem !important; padding:.42rem .9rem !important;
+}
+[class*="st-key-rlnav-nav_sec"] button[aria-checked="true"] {
+  background:var(--surface) !important; color:var(--text) !important;
+  box-shadow:var(--shadow-sm) !important; font-weight:700 !important;
+}
+
+/* 아래 줄 — 테두리 없이 글자 + 밑줄 */
+[class*="st-key-rlnav-nav_scr"] { margin:.35rem 0 .9rem; }
+[class*="st-key-rlnav-nav_scr"] [role="radiogroup"] {
+  gap:.2rem; border-bottom:1px solid var(--line); padding:0;
+  width:100%; justify-content:flex-start;
 }
 [class*="st-key-rlnav-nav_scr"] button[data-variant="segmented_control"] {
-  font-size:.82rem;
+  flex:0 0 auto !important;
+  font-size:.83rem !important; padding:.4rem .7rem !important;
+  border-radius:7px 7px 0 0 !important; margin-bottom:-1px;
+  border-bottom:2px solid transparent !important;
 }
-[class*="st-key-rlnav-nav_scr"] { margin-bottom:.5rem; }
+[class*="st-key-rlnav-nav_scr"] button[aria-checked="true"] {
+  color:var(--accent-ink) !important; font-weight:700 !important;
+  background:transparent !important;
+  border-bottom:2px solid var(--accent) !important;
+}
+[class*="st-key-rlnav-nav_scr"] button[aria-checked="true"]:hover {
+  background:transparent !important;
+}
+
+/* 머리 줄의 화면/잠금 — 이동 줄과 같은 결로, 조용하게 */
+[class*="st-key-rlhead"] .stButton>button,
+[class*="st-key-rlhead"] [data-testid="stPopover"] button {
+  background:transparent !important; border:1px solid var(--line) !important;
+  box-shadow:none !important; color:var(--text-2) !important;
+  font-size:.82rem !important; font-weight:600 !important;
+  min-height:34px !important; border-radius:8px !important;
+}
+[class*="st-key-rlhead"] .stButton>button:hover,
+[class*="st-key-rlhead"] [data-testid="stPopover"] button:hover {
+  color:var(--text) !important; background:var(--surface-2) !important;
+  border-color:var(--line) !important;
+}
+
+/* 저장 알림 띠 — 토스트는 몇 초면 사라져서 놓치기 쉽습니다.
+   직접 닫거나 한참 지나야 없어지도록 화면 위쪽에 남겨 둡니다. */
+.rl-flash {
+  background:var(--ok-bg); border:none; border-left:3px solid var(--ok);
+  border-radius:0 8px 8px 0; padding:.5rem .8rem;
+  font-size:.86rem; font-weight:600; color:var(--text);
+  display:flex; align-items:center; gap:.45rem;
+}
+.rl-flash .i { font-size:.95rem; opacity:.9; }
+[class*="st-key-rlflash"] { margin-bottom:.6rem; }
+[class*="st-key-rlflash"] div[data-testid="stHorizontalBlock"] {
+  flex-wrap:nowrap !important; gap:.25rem !important; align-items:center;
+}
+[class*="st-key-rlflash"] div[data-testid="stColumn"]:last-child {
+  flex:0 0 34px !important; min-width:0 !important;
+}
+[class*="st-key-rlflash"] .stButton>button {
+  background:transparent !important; border:none !important;
+  box-shadow:none !important; color:var(--text-3) !important;
+  min-height:0 !important; padding:.15rem !important; font-size:.8rem !important;
+}
+[class*="st-key-rlflash"] .stButton>button:hover { color:var(--text) !important; }
 
 /* 카드 아래 '자세히 →' — 버튼이지만 링크처럼 보이게 */
 [class*="st-key-rl-cardlink"] .stButton > button {
