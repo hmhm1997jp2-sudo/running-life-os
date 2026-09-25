@@ -43,6 +43,9 @@ WORKOUT_TYPE_HELP = [
                  "최대산소섭취량(VO2max)을 올리는 훈련", "Z5"),
     ("Sprint", "스프린트 — 10~30초 전력 질주 + 충분한 휴식. "
                "근신경과 파워를 건드립니다", "무산소"),
+    ("Time Trial", "타임트라이얼 — 대회는 아니지만 **그 거리를 전력으로** 달린 기록. "
+                   "VDOT과 훈련 페이스 존을 현재 기량으로 다시 맞추는 기준이 됩니다 "
+                   "(6~8주에 한 번, 5km나 10km 권장)", "전력"),
     ("Race", "대회 — 실제 대회이거나 대회처럼 전력으로 달린 기록", "전력"),
     ("Cross Training", "크로스 트레이닝 — 자전거·수영·근력 등 달리기 외 운동", "—"),
 ]
@@ -756,7 +759,10 @@ TREND_METRICS = [
     ("rhr",       "안정시 심박 (bpm)", "daily", ["RestingHR"],        "line", ",d", None),
     ("sleep",     "수면 점수",        "daily",  ["SleepScore"],       "line", ",d", (0, 100)),
     ("recovery",  "회복 시간 (h)",    "daily",  ["RecoveryTimeHr"],   "bar",  ",d", None),
-    ("intensity", "고강도 분",        "daily",  ["IntensityMinutes"], "bar",  ",d", None),
+    ("int_day",   "고강도 분 (당일)",  "daily",  ["IntensityMinutesDay"], "bar", ",d", None),
+    ("int7",      "고강도 분 (7일 누적)", "daily", ["IntensityMin7"],   "line", ",d", None),
+    ("intensity", "고강도 분 (가민 주간·예전 입력)", "daily", ["IntensityMinutes"],
+     "bar",  ",d", None),
     ("vo2",       "VO₂max",           "metric", ["VO2Max"],           "line", ".1f", None),
     ("fitage",    "피트니스 나이",    "metric", ["FitnessAge"],       "line", ".1f", None),
     ("endurance", "Endurance Score",  "metric", ["EnduranceScore"],   "line", ",d", None),
@@ -861,6 +867,109 @@ def body_summary(bd: pd.DataFrame, recent: int = 4) -> pd.DataFrame:
                                      (" 👍" if d * good > 0 else " 👀"))),
             "측정": f"{len(s)}회",
         })
+    return pd.DataFrame(rows)
+
+
+# ── 부상 · 통증 ─────────────────────────────────────────────────────────────
+INJURY_SITES = ["무릎", "아킬레스건", "발목", "족저근막/발바닥", "정강이(정강이통)",
+                "종아리", "햄스트링", "허벅지 앞(대퇴사두)", "고관절/엉덩이",
+                "허리", "엉덩정강근막(IT밴드)", "발가락/발등", "기타"]
+INJURY_SIDES = ["해당 없음", "왼쪽", "오른쪽", "양쪽"]
+INJURY_STATUS = ["진행 중", "관리 중", "회복됨"]
+INJURY_CAUSES = ["모름", "부하 급증", "과사용(누적)", "신발", "노면/언덕",
+                 "넘어짐·사고", "복귀 직후", "기타"]
+# 강도 — 러너가 실제로 쓰는 기준으로 말을 붙입니다
+SEVERITY_KR = {1: "신경 쓰이는 정도", 2: "신경 쓰이는 정도",
+               3: "뛰면 느껴지지만 지장 없음", 4: "뛰면 느껴지지만 지장 없음",
+               5: "페이스가 떨어짐", 6: "페이스가 떨어짐",
+               7: "뛰기 어려움", 8: "뛰기 어려움",
+               9: "일상에서도 아픔", 10: "일상에서도 아픔"}
+
+
+def severity_meta(v) -> tuple[str, str]:
+    x = _num(v, np.nan)
+    if not np.isfinite(x) or x <= 0:
+        return "", "—"
+    lab = SEVERITY_KR.get(int(round(x)), "")
+    tone = "ok" if x <= 2 else "warn" if x <= 5 else "bad"
+    return tone, lab
+
+
+def prepare_injury(df_inj: pd.DataFrame) -> pd.DataFrame:
+    """부상 기록 정리 — 날짜 파싱, 진행 중 판단, 지속 일수."""
+    if df_inj is None or df_inj.empty or "StartDate" not in df_inj.columns:
+        return pd.DataFrame()
+    d = df_inj.copy()
+    d["StartDate"] = pd.to_datetime(d["StartDate"], errors="coerce")
+    d["EndDate"] = pd.to_datetime(d.get("EndDate"), errors="coerce")
+    d = d.dropna(subset=["StartDate"]).sort_values("StartDate", ascending=False)
+    if d.empty:
+        return d
+    d["Severity"] = pd.to_numeric(d.get("Severity"), errors="coerce")
+    today = pd.Timestamp(datetime.now()).normalize()
+    d["_open"] = d["EndDate"].isna() & (d.get("Status", "").astype(str) != "회복됨")
+    d["_end"] = d["EndDate"].fillna(today)
+    d["_days"] = (d["_end"] - d["StartDate"]).dt.days + 1
+    return d.reset_index(drop=True)
+
+
+def active_injuries(inj: pd.DataFrame) -> pd.DataFrame:
+    """아직 안 끝난 것만."""
+    if inj is None or inj.empty or "_open" not in inj.columns:
+        return pd.DataFrame()
+    return inj[inj["_open"]]
+
+
+def injury_label(row) -> str:
+    """'왼쪽 무릎 · 5/10' 한 줄."""
+    site = str(row.get("Site") or "부위 미상")
+    side = str(row.get("Side") or "")
+    side = "" if side in ("", "해당 없음", "nan") else side + " "
+    sev = _num(row.get("Severity"), np.nan)
+    tail = f" · {sev:.0f}/10" if np.isfinite(sev) and sev > 0 else ""
+    return f"{side}{site}{tail}"
+
+
+def injury_alerts(inj: pd.DataFrame) -> list[dict]:
+    """진행 중인 부상을 오늘의 체크포인트에 올립니다."""
+    act = active_injuries(inj)
+    if act is None or act.empty:
+        return []
+    # 같은 부위·좌우를 여러 줄로 적어 두면 체크포인트가 같은 말을 반복합니다.
+    # 가장 아픈(= Severity 가 큰) 한 줄만 올립니다.
+    if {"Site", "Side"} <= set(act.columns):
+        act = (act.assign(_s=pd.to_numeric(act.get("Severity"), errors="coerce")
+                          .fillna(0))
+               .sort_values("_s", ascending=False)
+               .drop_duplicates(subset=["Site", "Side"], keep="first"))
+    out = []
+    for _, r in act.iterrows():
+        sev = _num(r.get("Severity"), 0)
+        out.append({
+            "level": "error" if sev >= 7 else "warning",
+            "msg": (f"🩹 {injury_label(r)} — {int(_num(r.get('_days'), 0))}일째. "
+                    + ("훈련보다 회복이 먼저입니다." if sev >= 7
+                       else "강도를 올리기 전에 상태를 먼저 보세요.")),
+        })
+    return out
+
+
+def injury_spans(inj: pd.DataFrame, lo=None, hi=None) -> pd.DataFrame:
+    """차트에 음영으로 겹칠 구간 — [시작, 끝, 라벨, 강도]."""
+    if inj is None or inj.empty:
+        return pd.DataFrame()
+    d = inj.copy()
+    rows = []
+    for _, r in d.iterrows():
+        s, e = r["StartDate"], r["_end"]
+        if lo is not None and e < pd.Timestamp(lo):
+            continue
+        if hi is not None and s > pd.Timestamp(hi):
+            continue
+        rows.append({"시작": max(s, pd.Timestamp(lo)) if lo is not None else s,
+                     "끝": min(e, pd.Timestamp(hi)) if hi is not None else e,
+                     "부상": injury_label(r),
+                     "강도": _num(r.get("Severity"), np.nan)})
     return pd.DataFrame(rows)
 
 
@@ -1037,6 +1146,12 @@ WORKOUT_TREND_METRICS = [
      "수직 진동 ÷ 보폭. 앞으로 간 거리 대비 위로 튄 정도라 **낮을수록 경제적**입니다. "
      "키·페이스 차이를 흡수해서, 폼 지표 중에서는 훈련끼리 비교하기 가장 좋습니다. "
      "가민 기준 6% 아래면 매우 좋음, 8% 부근이 보통입니다."),
+    ("GctDriftPct", "후반 접지 변화", "%", ".1f", -1,
+     "훈련 **후반의 접지 시간이 전반보다 몇 % 늘었는지**. 지치면 발이 땅에 "
+     "더 오래 머뭅니다 — 커질수록 후반에 자세가 무너진 것입니다. "
+     "디커플링과 짝지어 보면 원인이 갈립니다: 접지는 그대로인데 심박만 "
+     "올랐다면 심혈관 드리프트, 접지까지 늘었다면 근지구력 쪽입니다. "
+     "**.fit 파일로 넣은 훈련만** 계산됩니다(1초 기록이 있어야 합니다)."),
     ("RPE", "RPE (체감 강도)", "", ".1f", 0,
      "1~10 주관적 강도. 심박은 그대로인데 RPE만 계속 올라가면 "
      "누적 피로나 컨디션 저하를 의심할 만합니다."),
@@ -1048,7 +1163,8 @@ WORKOUT_TREND_METRICS = [
 # 추세선(직선)을 그을 만한 지표 — '몇 주에 걸쳐 좋아지고 있나'를 묻는 게
 # 말이 되는 값들입니다. 거리·시간·상승고도·TE·운동 부하는 그날 어떤 훈련을
 # 했느냐(코스·계획)로 정해지는 값이라 직선을 그으면 뜻이 없습니다.
-TREND_LINE_OK = {"PaceSec", "AvgHeartRate", "EF", "Decoupling", "AvgCadence",
+TREND_LINE_OK = {"PaceSec", "AvgHeartRate", "EF", "Decoupling", "GctDriftPct",
+                 "AvgCadence",
                  "AvgStrideM", "AvgGCTms", "AvgVertOscCm", "AvgVertRatioPct", "RPE"}
 
 # 이동평균 창 — '몇 회'가 아니라 '며칠'로 셉니다. 훈련 빈도가 주마다 달라서
@@ -1098,13 +1214,23 @@ def workout_trend(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
     hr = pd.to_numeric(d.get("AvgHeartRate"), errors="coerce")
     d["EF"] = np.where(hr > 0, d["SpeedMMin"] / hr, np.nan)
 
-    # 디커플링 — 랩이 저장된 훈련만
+    # 디커플링 — .fit 으로 넣은 훈련은 **1초 기록으로 잰 값**이 이미 들어 있습니다.
+    # 없을 때만 랩으로 어림합니다(랩이 4개 이상이어야 계산됩니다).
     if df_laps is not None and not df_laps.empty and "WorkoutID" in df_laps.columns:
         dec = {str(wid): decoupling(g)
                for wid, g in df_laps.groupby(df_laps["WorkoutID"].astype(str))}
         d["Decoupling"] = d["WorkoutID"].astype(str).map(dec)
     else:
         d["Decoupling"] = np.nan
+    if "DecouplingPct" in d.columns:
+        _exact = pd.to_numeric(d["DecouplingPct"], errors="coerce")
+        d["Decoupling"] = _exact.where(_exact.notna(), d["Decoupling"])
+        # .fit 으로 넣었는데 값이 비어 있으면 '일부러 안 낸 것'입니다
+        # (구간이 나뉜 훈련 — 재면 피로가 아니라 훈련 설계가 찍힙니다).
+        # 그런 훈련에 랩 어림값을 대신 채우면 오해를 부릅니다.
+        if "WatchZoneSec" in d.columns:
+            _from_fit = d["WatchZoneSec"].apply(lambda v: len(parse_zone_sec(v)) > 0)
+            d.loc[_from_fit & _exact.isna(), "Decoupling"] = np.nan
 
     keep = ["WorkoutDate", "WorkoutType", "WorkoutID"]
     _days = (d["WorkoutDate"] - d["WorkoutDate"].min()).dt.total_seconds() / 86400.0
@@ -1112,7 +1238,8 @@ def workout_trend(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
         if col not in d.columns:
             continue
         v = pd.to_numeric(d[col], errors="coerce")
-        v = v.where(v > 0) if col != "Decoupling" else v   # 디커플링은 음수가 정상
+        # 디커플링·접지 변화는 음수가 정상입니다(0을 미입력으로 보면 안 됩니다)
+        v = v if col in ("Decoupling", "GctDriftPct") else v.where(v > 0)
         if v.notna().sum() == 0:
             continue
         d[col] = v
@@ -1368,6 +1495,10 @@ def detect_prs(df_work: pd.DataFrame, tol: float = 0.03,
             "Source": src,
             "Workout": wlab,
             "Note": note,
+            # VDOT 판정에 쓰려고 원본 수치를 함께 남깁니다
+            "_sec": float(sec), "_dist": float(dist),
+            "_date": pd.Timestamp(dt),
+            "_type": str(wlab).split(" ")[0] if wlab else "",
         })
     if not d.empty:
         lr = d.loc[d["DistanceKm"].idxmax()]
@@ -1375,6 +1506,94 @@ def detect_prs(df_work: pd.DataFrame, tol: float = 0.03,
                      "AchievedDate": lr["WorkoutDate"].strftime("%Y-%m-%d"),
                      "PaceStr": pace_str(_num(lr["PaceSec"], np.nan)),
                      "Source": "훈련 전체", "Workout": _wlabel(row=lr), "Note": ""})
+    return pd.DataFrame(rows)
+
+
+# VDOT은 '최대노력 기록 한 건'에서 나오는 값입니다. 이지런 중간의 빠른 구간처럼
+# 전력이 아닌 기록에서 뽑으면 실제 기량보다 한참 낮게 나옵니다.
+HARD_TYPES = {"Race", "Time Trial", "Interval", "Threshold", "Tempo"}
+
+
+def vdot_table(df_work: pd.DataFrame, df_laps: pd.DataFrame = None,
+               days: int | None = 180, lthr: float | None = None) -> pd.DataFrame:
+    """VDOT 후보 — 기간 안의 거리별 최고 기록마다 VDOT과 '최대노력인가' 판정.
+
+    반환 컬럼: 종목 · 기록 · 날짜 · 페이스 · 유형 · VDOT · 최대노력 · 사유
+    '최대노력'이 False인 기록으로 계산한 VDOT은 **실제보다 낮게** 나옵니다.
+    """
+    d = prepare_workouts(df_work)
+    if d.empty:
+        return pd.DataFrame()
+    if days:
+        cutoff = pd.Timestamp(datetime.now()).normalize() - timedelta(days=days - 1)
+        d = d[d["WorkoutDate"] >= cutoff]
+        if df_laps is not None and not df_laps.empty and "WorkoutID" in df_laps.columns:
+            ids = set(d["WorkoutID"].astype(str))
+            df_laps = df_laps[df_laps["WorkoutID"].astype(str).isin(ids)]
+    if d.empty:
+        return pd.DataFrame()
+
+    prs = detect_prs(d, df_laps=df_laps)
+    if prs.empty:
+        return pd.DataFrame()
+    hr_by_type = d.set_index(d["WorkoutID"].astype(str))["AvgHeartRate"].to_dict()
+    rows = []
+    for _, r in prs.iterrows():
+        if r["Category"] == "Longest Run" or r["TimeOrDist"] == "-":
+            continue
+        sec, dist = _num(r.get("_sec"), np.nan), _num(r.get("_dist"), np.nan)
+        if not (np.isfinite(sec) and np.isfinite(dist) and sec > 0 and dist > 0):
+            continue
+        v = vdot_from_performance(dist, sec / 60.0)
+        wtype = str(r.get("_type") or "")
+        hard = wtype in HARD_TYPES
+        why = (f"{wtype} — 전력에 가까운 훈련" if hard else
+               f"{wtype} — 최대노력이 아닙니다" if wtype else "유형을 알 수 없습니다")
+        # 아주 짧은 구간(1km)은 유산소 기량 추정에 잘 맞지 않습니다
+        if dist < 3.0:
+            hard = False
+            why = "1km는 VDOT 추정에 잘 맞지 않습니다 (5km 이상 권장)"
+        rows.append({"종목": r["Category"], "기록": r["TimeOrDist"],
+                     "날짜": r["AchievedDate"], "페이스": r["PaceStr"],
+                     "유형": wtype or "—", "VDOT": round(float(v), 1)
+                     if np.isfinite(v) else np.nan,
+                     "최대노력": "✅" if hard else "—", "_hard": bool(hard),
+                     "_date": r.get("_date"), "사유": why})
+    out = pd.DataFrame(rows)
+    return out.sort_values("VDOT", ascending=False).reset_index(drop=True) \
+        if not out.empty else out
+
+
+def vdot_pick(tbl: pd.DataFrame) -> dict:
+    """후보 표에서 기준 하나를 고릅니다 — 최대노력 기록 우선, 없으면 최고 VDOT."""
+    if tbl is None or tbl.empty:
+        return {}
+    hard = tbl[tbl["_hard"]]
+    src = hard if not hard.empty else tbl
+    row = src.loc[src["VDOT"].idxmax()]
+    age = ((pd.Timestamp(datetime.now()).normalize()
+            - pd.Timestamp(row["_date"])).days
+           if pd.notna(row.get("_date")) else np.nan)
+    return {"vdot": float(row["VDOT"]), "category": row["종목"],
+            "time": row["기록"], "date": row["날짜"], "type": row["유형"],
+            "hard": bool(row["_hard"]), "why": row["사유"],
+            "age_days": int(age) if np.isfinite(age) else None}
+
+
+def garmin_vdot(g: dict) -> pd.DataFrame:
+    """가민 레이스 예측을 거꾸로 돌려 VDOT을 냅니다 — 교차검증용.
+
+    가민 예측은 '그 거리를 전력으로 뛰면 이 정도'라는 값이라, 최대노력 기록이
+    없을 때 VDOT의 현실적인 상한을 가늠하는 데 씁니다."""
+    rows = []
+    for key, label, dist in RACE_PRED_COLS:
+        sec = parse_time_str(g.get(key))
+        if not np.isfinite(sec) or sec <= 0:
+            continue
+        v = vdot_from_performance(dist, sec / 60.0)
+        if np.isfinite(v):
+            rows.append({"종목": label, "가민 예측": time_str(sec),
+                         "VDOT": round(float(v), 1)})
     return pd.DataFrame(rows)
 
 
@@ -1558,6 +1777,75 @@ def _measured_ts(df: pd.DataFrame, date_col: str) -> pd.Series:
     return exact.fillna(base)
 
 
+def add_intensity_rolling(gdv: pd.DataFrame,
+                          date_col: str = "StatusDate") -> pd.DataFrame:
+    """‘당일 고강도 분’에서 **최근 7일 누적**과 **이번 주(월~일) 누적**을 만듭니다.
+
+    가민 시계의 주간 고강도는 롤링 7일이라 매일 값이 달라집니다. 그걸 매일
+    받아 적으면 요일 효과 때문에 추이가 읽히지 않습니다 — 그래서 **당일 값만
+    적고 누적은 여기서 계산**합니다. 당일 값이 없는 날은 0으로 봅니다.
+    """
+    if gdv is None or gdv.empty or date_col not in gdv.columns:
+        return gdv
+    d = gdv.copy()
+    if "IntensityMinutesDay" not in d.columns:
+        d["IntensityMin7"] = np.nan
+        d["IntensityMinWeek"] = np.nan
+        return d
+    d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
+    v = pd.to_numeric(d["IntensityMinutesDay"], errors="coerce")
+    if v.notna().sum() == 0:
+        d["IntensityMin7"] = np.nan
+        d["IntensityMinWeek"] = np.nan
+        return d
+    day = (d[[date_col]].assign(v=v).dropna(subset=[date_col])
+           .groupby(date_col, as_index=True)["v"].max())
+    full = day.reindex(pd.date_range(day.index.min(), day.index.max(), freq="D"))
+    filled = full.fillna(0.0)
+    roll7 = filled.rolling(7, min_periods=1).sum()
+    wk = filled.groupby(filled.index.to_period("W-SUN")).cumsum()
+    # 값을 한 번도 안 넣은 날은 누적도 비워 둡니다 (0으로 오해하지 않게)
+    seen = full.notna().cumsum() > 0
+    d["IntensityMin7"] = d[date_col].map(roll7.where(seen))
+    d["IntensityMinWeek"] = d[date_col].map(wk.where(seen))
+    return d
+
+
+def merge_daily_rows(df_daily: pd.DataFrame) -> pd.DataFrame:
+    """같은 날짜의 여러 줄을 한 줄로 합칩니다.
+
+    항목마다 **본 시각(MeasuredAt)이 가장 나중인 값**을 남기고, 그 줄에서 비어
+    있으면 같은 날의 다른 줄 값으로 채웁니다. 어떤 값도 사라지지 않습니다.
+    (아침/훈련 후 체크인이 따로였던 시절에 하루 두 줄이 생겼습니다)
+    """
+    if df_daily is None or df_daily.empty or "StatusDate" not in df_daily.columns:
+        return df_daily
+    d = df_daily.copy()
+    d["_day"] = d["StatusDate"].astype(str).str.strip().str.slice(0, 10)
+    d["_ts"] = _measured_ts(d, "StatusDate")
+    d = d.sort_values(["_day", "_ts"], kind="stable")
+
+    def _blank(v):
+        return (v is None or (not isinstance(v, str) and pd.isna(v))
+                or str(v).strip() in ("", "nan", "None", "NaT", "<NA>", "—"))
+
+    out = []
+    for day, g in d.groupby("_day", sort=True):
+        if day == "":
+            out.extend(g.to_dict("records"))
+            continue
+        base = g.iloc[-1].to_dict()              # 가장 나중에 본 줄이 기준
+        for _, r in g.iloc[::-1].iterrows():     # 나중 → 먼저 순으로 빈 칸 채우기
+            for k, v in r.items():
+                if _blank(base.get(k)) and not _blank(v):
+                    base[k] = v
+        out.append(base)
+    res = pd.DataFrame(out).drop(columns=["_day", "_ts"], errors="ignore")
+    if "StatusDate" in res.columns:
+        res = res.sort_values("StatusDate", kind="stable")
+    return res.reset_index(drop=True)
+
+
 def _latest(df: pd.DataFrame, date_col: str, field: str):
     """해당 컬럼에서 값이 있는 가장 최근 행의 (값, 날짜)."""
     if df is None or df.empty or field not in df.columns:
@@ -1567,7 +1855,10 @@ def _latest(df: pd.DataFrame, date_col: str, field: str):
     d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
     d = d.dropna(subset=[date_col]).sort_values(["_ts", date_col], kind="stable")
     vals = d[field]
-    mask = vals.notna() & (vals.astype(str).str.strip() != "")
+    # '—'/'-' 는 '값 없음'입니다. 예전에 빈 칸을 '—'로 저장한 줄이 있어서,
+    # 그 줄이 '가장 최근 값'으로 잡혀 진짜 값을 가리는 일이 있었습니다.
+    _txt = vals.astype(str).str.strip()
+    mask = vals.notna() & ~_txt.isin(["", "—", "-", "nan", "None", "<NA>"])
     if not mask.any():
         return None, None, None
     row = d[mask].iloc[-1]
@@ -1582,6 +1873,7 @@ def latest_garmin(df_daily: pd.DataFrame, df_metrics: pd.DataFrame) -> dict:
                     "RecoveryTimeHr",
                     "TrainingReadiness", "BodyBattery", "HRVStatus", "HRVms",
                     "SleepScore", "RestingHR", "IntensityMinutes",
+                    "IntensityMinutesDay",
                     "MeasuredAt", "RecoveryUntil",
                     "SleepHistory", "StressHistory"]
     weekly_fields = ["VO2Max", "FitnessAge", "EnduranceScore", "HillScore",
@@ -1929,8 +2221,10 @@ def fix_race_pred(txt, key: str) -> str:
     (10km 48시간은 있을 수 없으니 48:28 = 48분 28초로 봅니다.)
     """
     t = str(txt or "").strip()
-    if not t or t == "—":
-        return "—"
+    if not t or t in ("—", "-"):
+        # 빈 칸은 '값 없음'이어야 합니다. 예전에는 '—'를 저장해서, 그 줄이
+        # '가장 최근 값'으로 잡혀 진짜 예측 기록을 가려 버렸습니다.
+        return ""
     parts = t.split(":")
     if len(parts) < 2:
         return t
@@ -2353,3 +2647,603 @@ def interval_shape(classified: pd.DataFrame) -> str:
     unit = f"{d_mean:.2f}km" if d_mean >= 0.2 else f"{d_mean*1000:.0f}m"
     tail = f" · 회복 {rec}랩" if rec else ""
     return f"{len(rep)} × {unit} @ {pace_str(mins * 60 / dist)}{tail}"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 가민 .fit 활동 파일 읽기
+# ═══════════════════════════════════════════════════════════════════════════
+# 시계가 직접 쓴 원본 파일입니다. Connect 화면에서 눈으로 옮겨 적던 값이
+# 거의 전부 들어 있고, 1초 단위 기록까지 있어 디커플링처럼 '중간이 있어야
+# 계산되는 값'을 제대로 낼 수 있습니다.
+#   받는 곳: Garmin Connect 웹 → 활동 → 우상단 ⚙ → 원본 파일 내보내기
+#
+# 주의 — 트레드밀: Connect에서 거리를 보정해도 그 보정은 **원본 파일에 반영되지
+# 않습니다**. 파일에는 시계가 잰 거리가 그대로 들어 있습니다. 그래서 가져올 때
+# 총 거리를 고쳐 넣을 수 있게 하고, 고치면 랩·페이스도 같은 비율로 맞춥니다.
+
+# 가민이 활동에 매기는 '주요 효과' — 공개 규격에 이름이 없는 번호 필드라
+# 실제 파일 4개(베이스 2건 / VO2max / 회복)로 대조해 확인한 순서입니다.
+FIT_BENEFIT_FIELD = 188
+FIT_BENEFIT = {0: "", 1: "Recovery", 2: "Base", 3: "Tempo", 4: "Threshold",
+               5: "VO2max", 6: "Anaerobic", 7: "Sprint"}
+
+# 랩 강도 — 구조화 훈련에서는 시계가 직접 붙여 줍니다(추정할 필요가 없습니다)
+FIT_LAP_ROLE = {"warmup": "워밍업", "interval": "반복", "active": "반복",
+                "recovery": "회복", "rest": "회복", "cooldown": "쿨다운",
+                "warm_up": "워밍업", "cool_down": "쿨다운"}
+
+# 주요 효과 → 훈련 유형 추천 (확정이 아니라 첫 값입니다)
+FIT_TYPE_HINT = {"Recovery": "Recovery", "Base": "Easy", "Tempo": "Tempo",
+                 "Threshold": "Threshold", "VO2max": "Interval",
+                 "Anaerobic": "Interval", "Sprint": "Sprint"}
+
+
+def _fit_num(v, default=np.nan):
+    try:
+        f = float(v)
+        return f if np.isfinite(f) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _fit_spm(cad, frac):
+    """FIT의 케이던스는 '한쪽 발 기준'입니다 — 두 배 해야 spm 이 됩니다."""
+    c = _fit_num(cad)
+    if not np.isfinite(c):
+        return np.nan
+    return round((c + _fit_num(frac, 0.0)) * 2)
+
+
+def _fit_local_offset(msgs) -> pd.Timedelta:
+    """파일의 시각은 UTC 입니다. activity 메시지의 local_timestamp 로 시차를 구합니다."""
+    try:
+        a = msgs["activity_mesgs"][0]
+        loc = a.get("local_timestamp")
+        utc = a.get("timestamp")
+        if loc is None or utc is None:
+            return pd.Timedelta(0)
+        # local_timestamp 는 FIT 기준시(1989-12-31)부터의 초
+        base = pd.Timestamp("1989-12-31", tz="UTC")
+        loc_ts = base + pd.Timedelta(seconds=float(loc))
+        off = loc_ts - pd.Timestamp(utc)
+        # 15분 단위로 반올림 — 시차는 그 배수입니다
+        return pd.Timedelta(minutes=round(off.total_seconds() / 900) * 15)
+    except Exception:
+        return pd.Timedelta(0)
+
+
+def fit_decode(data):
+    """.fit 바이트 또는 경로 → 메시지 묶음. 라이브러리가 없으면 안내를 냅니다."""
+    try:
+        from garmin_fit_sdk import Decoder, Stream
+    except ImportError as e:                                # pragma: no cover
+        raise RuntimeError(
+            "가민 .fit 파일을 읽으려면 garmin-fit-sdk 가 필요합니다. "
+            "requirements.txt 에 `garmin-fit-sdk` 를 넣고 다시 배포하세요.") from e
+    if isinstance(data, (bytes, bytearray)):
+        stream = Stream.from_byte_array(bytearray(data))
+    else:
+        stream = Stream.from_file(str(data))
+    msgs, errors = Decoder(stream).read()
+    return msgs, errors
+
+
+def fit_series(msgs) -> pd.DataFrame:
+    """1초 단위 기록 → 표. 없으면 빈 표."""
+    rec = msgs.get("record_mesgs") or []
+    if not rec:
+        return pd.DataFrame()
+    keep = ["timestamp", "distance", "enhanced_speed", "speed", "heart_rate",
+            "cadence", "fractional_cadence", "stance_time", "vertical_oscillation",
+            "vertical_ratio", "step_length", "enhanced_altitude", "altitude",
+            "power", "temperature"]
+    d = pd.DataFrame([{k: r.get(k) for k in keep if k in r} for r in rec])
+    if d.empty or "timestamp" not in d.columns:
+        return pd.DataFrame()
+    d["timestamp"] = pd.to_datetime(d["timestamp"], errors="coerce", utc=True)
+    d = d.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    if "enhanced_speed" in d.columns:
+        d["speed"] = pd.to_numeric(d["enhanced_speed"], errors="coerce")
+    elif "speed" in d.columns:
+        d["speed"] = pd.to_numeric(d["speed"], errors="coerce")
+    d["t"] = (d["timestamp"] - d["timestamp"].iloc[0]).dt.total_seconds()
+    return d
+
+
+def fit_decoupling(series: pd.DataFrame) -> float:
+    """1초 기록으로 계산한 심박 디커플링(Pa:HR, %).
+
+    전반/후반의 '속도 ÷ 심박'을 견줍니다. 양수가 크면 후반에 같은 페이스를 더
+    높은 심박으로 버틴 것 — 유산소 지구력 쪽 신호입니다(보통 5% 미만이면 양호).
+    랩 단위로 재던 것과 달리 멈춤·신호 대기까지 그대로 반영됩니다.
+    """
+    if series is None or series.empty or "speed" not in series.columns:
+        return np.nan
+    d = series[["t", "speed", "heart_rate"]].copy()
+    d["speed"] = pd.to_numeric(d["speed"], errors="coerce")
+    d["heart_rate"] = pd.to_numeric(d["heart_rate"], errors="coerce")
+    # 서 있는 구간은 빼야 합니다 — 0으로 나눈 EF가 평균을 망칩니다
+    d = d[(d["speed"] > 0.5) & (d["heart_rate"] > 50)].dropna()
+    if len(d) < 300:                    # 5분치도 안 되면 뜻이 없습니다
+        return np.nan
+    half = d["t"].iloc[0] + (d["t"].iloc[-1] - d["t"].iloc[0]) / 2
+    a, b = d[d.t <= half], d[d.t > half]
+    if len(a) < 120 or len(b) < 120:
+        return np.nan
+    ef1 = a["speed"].mean() / a["heart_rate"].mean()
+    ef2 = b["speed"].mean() / b["heart_rate"].mean()
+    if not np.isfinite(ef1) or ef1 <= 0:
+        return np.nan
+    return float((ef1 - ef2) / ef1 * 100)
+
+
+def fit_form_split(series: pd.DataFrame) -> dict:
+    """전반/후반 폼 지표 — 후반에 무너지는지 봅니다."""
+    out = {}
+    if series is None or series.empty:
+        return out
+    d = series.copy()
+    if "speed" in d.columns:
+        d = d[pd.to_numeric(d["speed"], errors="coerce") > 0.5]
+    if len(d) < 300:
+        return out
+    half = d["t"].iloc[0] + (d["t"].iloc[-1] - d["t"].iloc[0]) / 2
+    a, b = d[d.t <= half], d[d.t > half]
+    for col, name in (("stance_time", "접지 시간 (ms)"),
+                      ("vertical_oscillation", "수직 진동 (mm)"),
+                      ("vertical_ratio", "수직 비율 (%)"),
+                      ("step_length", "보폭 (mm)"),
+                      ("cadence", "케이던스 (한쪽)"),
+                      ("heart_rate", "심박 (bpm)")):
+        if col not in d.columns:
+            continue
+        va = pd.to_numeric(a[col], errors="coerce").mean()
+        vb = pd.to_numeric(b[col], errors="coerce").mean()
+        if np.isfinite(va) and np.isfinite(vb):
+            out[name] = (float(va), float(vb))
+    return out
+
+
+def fit_laps(msgs, offset=None) -> pd.DataFrame:
+    """랩 메시지 → 앱의 Laps 시트 모양. 랩 역할은 시계가 붙인 강도를 그대로 씁니다."""
+    laps = msgs.get("lap_mesgs") or []
+    if not laps:
+        return pd.DataFrame()
+    off = offset if offset is not None else pd.Timedelta(0)
+    rows, cum = [], 0.0
+    for i, L in enumerate(laps):
+        dist_km = _fit_num(L.get("total_distance"), 0.0) / 1000.0
+        mins = _fit_num(L.get("total_timer_time"), 0.0) / 60.0
+        mv = _fit_num(L.get("total_timer_time"))
+        el = _fit_num(L.get("total_elapsed_time"))
+        rows.append({
+            "LapNo": i + 1,
+            "CumMinutes": round(cum, 2),
+            "DistanceKm": round(dist_km, 3),
+            "DurationMinutes": round(_fit_num(el, mins * 60) / 60.0, 3),
+            "PaceSec": round(mins * 60 / dist_km, 1) if dist_km > 0 else "",
+            "AvgHeartRate": _fit_num(L.get("avg_heart_rate"), ""),
+            "MaxHeartRate": _fit_num(L.get("max_heart_rate"), ""),
+            "AvgPower": _fit_num(L.get("avg_power"), ""),
+            "AvgCadence": _fit_spm(L.get("avg_cadence"), L.get("avg_fractional_cadence")),
+            "ElevGainM": _fit_num(L.get("total_ascent"), ""),
+            "ElevLossM": _fit_num(L.get("total_descent"), ""),
+            "AvgGCTms": _fit_num(L.get("avg_stance_time"), ""),
+            "AvgStrideM": (round(_fit_num(L.get("avg_step_length")) / 1000.0, 3)
+                           if np.isfinite(_fit_num(L.get("avg_step_length"))) else ""),
+            "AvgVertOscCm": (round(_fit_num(L.get("avg_vertical_oscillation")) / 10.0, 2)
+                             if np.isfinite(_fit_num(L.get("avg_vertical_oscillation")))
+                             else ""),
+            "AvgVertRatioPct": _fit_num(L.get("avg_vertical_ratio"), ""),
+            "Calories": _fit_num(L.get("total_calories"), ""),
+            "TempC": _fit_num(L.get("avg_temperature"), ""),
+            "LapRole": FIT_LAP_ROLE.get(str(L.get("intensity") or "").lower(), ""),
+            "NormPower": _fit_num(L.get("normalized_power"), ""),
+            "MaxPower": _fit_num(L.get("max_power"), ""),
+            "MaxPaceSec": (round(1000.0 / _fit_num(L.get("enhanced_max_speed")), 1)
+                           if _fit_num(L.get("enhanced_max_speed"), 0) > 0 else ""),
+            "MaxCadence": _fit_spm(L.get("max_cadence"), 0),
+            "MovingMinutes": round(mv / 60.0, 3) if np.isfinite(mv) else "",
+            "_trigger": str(L.get("lap_trigger") or ""),
+        })
+        cum += mins
+    out = pd.DataFrame(rows)
+    # 거리 오토랩만 있고 강도가 전부 같으면 '구조 없는 훈련'입니다 — 역할을 비웁니다
+    roles = set(out["LapRole"]) - {""}
+    if len(roles) <= 1:
+        out["LapRole"] = ""
+    return out
+
+
+def fit_workout(msgs, offset=None) -> dict:
+    """세션 메시지 → 앱의 Workouts 시트 한 줄(+ 판단에 쓰는 몇 가지)."""
+    ses = (msgs.get("session_mesgs") or [{}])[0]
+    off = offset if offset is not None else _fit_local_offset(msgs)
+    start = pd.to_datetime(ses.get("start_time"), errors="coerce", utc=True)
+    local = (start + off) if pd.notna(start) else pd.NaT
+
+    dist_km = _fit_num(ses.get("total_distance"), 0.0) / 1000.0
+    el_min = _fit_num(ses.get("total_elapsed_time"), 0.0) / 60.0
+    mv_min = _fit_num(ses.get("total_timer_time"), 0.0) / 60.0
+    ben = FIT_BENEFIT.get(int(_fit_num(ses.get(FIT_BENEFIT_FIELD), -1))
+                          if np.isfinite(_fit_num(ses.get(FIT_BENEFIT_FIELD))) else -1, "")
+    sub = str(ses.get("sub_sport") or "")
+    rpe = _fit_num(ses.get("workout_rpe"))
+
+    def g(key, scale=1.0, nd=None):
+        v = _fit_num(ses.get(key))
+        if not np.isfinite(v):
+            return ""
+        v = v * scale
+        return round(v, nd) if nd is not None else v
+
+    row = {
+        "WorkoutDate": local.strftime("%Y-%m-%d") if pd.notna(local) else "",
+        "DistanceKm": round(dist_km, 3),
+        "DurationMinutes": round(el_min, 3),
+        "PaceSec": round(mv_min * 60 / dist_km, 1) if dist_km > 0 else "",
+        "AvgHeartRate": g("avg_heart_rate"),
+        "MaxHeartRate": g("max_heart_rate"),
+        "AvgPower": g("avg_power"),
+        "AvgCadence": _fit_spm(ses.get("avg_cadence"), ses.get("avg_fractional_cadence")),
+        "MaxCadence": _fit_spm(ses.get("max_cadence"), 0),
+        "ElevationGainM": g("total_ascent"),
+        "ElevLossM": g("total_descent"),
+        "Temperature": g("avg_temperature"),
+        "AerobicTE": g("total_training_effect"),
+        "AnaerobicTE": g("total_anaerobic_training_effect"),
+        "PrimaryBenefit": ben,
+        "TrainingLoad": g("training_load_peak", nd=0),
+        "Calories": g("total_calories"),
+        "AvgGCTms": g("avg_stance_time", nd=1),
+        "AvgStrideM": g("avg_step_length", 0.001, 3),
+        "AvgVertOscCm": g("avg_vertical_oscillation", 0.1, 2),
+        "AvgVertRatioPct": g("avg_vertical_ratio", nd=2),
+        "NormPower": g("normalized_power"),
+        "MaxPaceSec": (round(1000.0 / _fit_num(ses.get("enhanced_max_speed")), 1)
+                       if _fit_num(ses.get("enhanced_max_speed"), 0) > 0 else ""),
+        "MovingMinutes": round(mv_min, 3),
+        "Surface": "트레드밀" if sub == "treadmill" else "로드",
+        "RPE": int(min(10, max(1, round(rpe / 10)))) if np.isfinite(rpe) and rpe > 0 else "",
+        "WorkoutType": FIT_TYPE_HINT.get(ben, "Easy"),
+    }
+    row["_start_local"] = local
+    row["_sub_sport"] = sub
+    row["_sport"] = str(ses.get("sport") or "")
+    row["_profile"] = str(ses.get("sport_profile_name") or "")
+    row["_feel"] = _fit_num(ses.get("workout_feel"))
+    return row
+
+
+def fit_type_hint(w: dict, laps: pd.DataFrame) -> str:
+    """훈련 유형 첫 값 — 주요 효과만 보면 어긋납니다.
+
+    시계는 15초 스프린트 8세트짜리 훈련도 '주요 효과: 베이스'로 적습니다
+    (전체 시간의 대부분이 쉬운 러닝이라서). 그래서 **랩 구조를 먼저** 봅니다.
+    """
+    ben = str(w.get("PrimaryBenefit") or "")
+    reps = pd.DataFrame()
+    if laps is not None and not laps.empty and "LapRole" in laps.columns:
+        reps = laps[laps["LapRole"] == "반복"]
+    if len(reps) >= 2:                       # 구조화 훈련
+        if ben in ("VO2max", "Anaerobic", "Sprint", "Threshold", "Tempo"):
+            return FIT_TYPE_HINT.get(ben, "Interval")
+        sec = pd.to_numeric(reps["DurationMinutes"], errors="coerce").median() * 60
+        if np.isfinite(sec) and sec < 60:
+            return "Sprint"
+        if np.isfinite(sec) and sec < 360:
+            return "Interval"
+        return "Threshold"
+    # 쭉 달린 훈련
+    if ben in ("", "Base"):
+        mins = _fit_num(w.get("DurationMinutes"), 0)
+        km = _fit_num(w.get("DistanceKm"), 0)
+        if mins >= 90 or km >= 21:
+            return "LSD"
+        return FIT_TYPE_HINT.get(ben, "Easy")
+    return FIT_TYPE_HINT.get(ben, "Easy")
+
+
+def fit_steady(laps: pd.DataFrame, series: pd.DataFrame) -> bool:
+    """쭉 달린 훈련인가 — 디커플링은 이럴 때만 뜻이 있습니다.
+
+    인터벌은 후반이 원래 더 힘들게 짜여 있어서, 디커플링을 재면 늘 큰 값이
+    나옵니다(피로가 아니라 훈련 설계 때문). 그런 훈련에서는 내지 않습니다.
+    """
+    if laps is not None and not laps.empty and "LapRole" in laps.columns:
+        if len(set(laps["LapRole"]) - {""}) > 1:
+            return False
+    if series is None or series.empty or "speed" not in series.columns:
+        return True
+    sp = pd.to_numeric(series["speed"], errors="coerce")
+    sp = sp[sp > 0.5]
+    if len(sp) < 300 or sp.mean() <= 0:
+        return True
+    return bool(sp.std() / sp.mean() < 0.18)
+
+
+def fit_read(data, name: str = "") -> dict:
+    """가민 .fit 활동 파일 한 개를 앱이 쓰는 모양으로 바꿉니다.
+
+    반환: {"workout": dict, "laps": DataFrame, "series": DataFrame,
+           "decoupling": float, "form": dict, "warnings": [str], "zones": dict}
+    """
+    msgs, errors = fit_decode(data)
+    warn = [f"읽는 중 넘어간 부분이 {len(errors)}군데 있습니다."] if errors else []
+    if not msgs.get("session_mesgs"):
+        return {"workout": {}, "laps": pd.DataFrame(), "series": pd.DataFrame(),
+                "decoupling": np.nan, "form": {}, "zones": {},
+                "warnings": warn + ["활동 요약(session)이 없는 파일입니다 — "
+                                    "활동 파일이 맞는지 확인해 주세요."]}
+    off = _fit_local_offset(msgs)
+    w = fit_workout(msgs, off)
+    laps = fit_laps(msgs, off)
+    ser = fit_series(msgs)
+
+    if w.get("_sport") and w["_sport"] != "running":
+        warn.append(f"달리기가 아닌 활동입니다 ({w['_profile'] or w['_sport']}) — "
+                    "그대로 넣으면 통계가 섞입니다.")
+    if w.get("_sub_sport") == "treadmill":
+        warn.append(
+            "트레드밀 활동입니다. **Connect에서 고친 거리는 이 파일에 반영되지 "
+            "않습니다** — 파일에는 시계가 잰 거리가 그대로 들어 있습니다. "
+            "아래에서 Connect에 뜨는 총 거리로 고쳐 넣으면 랩과 페이스도 "
+            "같은 비율로 맞춰 넣습니다.")
+    if w.get("ElevationGainM") == "":
+        warn.append("상승고도가 없는 파일입니다 (트레드밀·실내) — 빈 칸으로 둡니다.")
+
+    # 시계가 쓰던 심박존 — 추정 대신 그대로 쓸 수 있습니다
+    zones = {}
+    for z in (msgs.get("time_in_zone_mesgs") or []):
+        if str(z.get("reference_mesg")) == "session":
+            zones = {"bounds": list(z.get("hr_zone_high_boundary") or []),
+                     "time": list(z.get("time_in_hr_zone") or []),
+                     "lthr": _fit_num(z.get("threshold_heart_rate")),
+                     "max": _fit_num(z.get("max_heart_rate")),
+                     "rest": _fit_num(z.get("resting_heart_rate")),
+                     "calc": str(z.get("hr_calc_type") or "")}
+            break
+
+    w["WorkoutType"] = fit_type_hint(w, laps)
+    steady = fit_steady(laps, ser)
+    # ── 1초 기록에서 뽑아 '저장할' 값 ──────────────────────────────────────
+    # 원본 1초 기록은 남기지 않습니다(1년이면 시트 한 문서 한도를 넘습니다).
+    # 대신 여러 훈련을 가로질러 비교되는 값만 훈련 줄에 같이 넣습니다.
+    _form = fit_form_split(ser)
+    _gct = _form.get("접지 시간 (ms)")
+    w["GctDriftPct"] = (round((_gct[1] - _gct[0]) / _gct[0] * 100, 2)
+                        if _gct and _gct[0] > 0 else "")
+    if zones.get("time"):
+        _t = [int(round(_fit_num(x, 0))) for x in zones["time"]]
+        w["WatchZoneSec"] = "|".join(str(x) for x in _t)
+        w["WatchZoneBounds"] = "|".join(
+            str(int(round(_fit_num(b, 0)))) for b in (zones.get("bounds") or []))
+    else:
+        w["WatchZoneSec"] = ""
+        w["WatchZoneBounds"] = ""
+    dec = fit_decoupling(ser) if steady else np.nan
+    if not steady:
+        warn.append("구간이 나뉜 훈련이라 **심박 디커플링은 내지 않습니다** — "
+                    "후반이 원래 더 힘들게 짜여 있어서, 재면 피로가 아니라 "
+                    "훈련 설계가 찍힙니다.")
+    w["DecouplingPct"] = round(float(dec), 2) if np.isfinite(dec) else ""
+    return {"workout": w, "laps": laps, "series": ser,
+            "decoupling": dec, "steady": steady, "form": _form,
+            "zones": zones, "warnings": warn, "name": name}
+
+
+def fit_rescale(res: dict, new_km: float) -> dict:
+    """총 거리를 고쳐 넣으면 랩·페이스를 같은 비율로 맞춥니다 (트레드밀 보정)."""
+    old = _fit_num(res.get("workout", {}).get("DistanceKm"), 0.0)
+    new = _fit_num(new_km, 0.0)
+    if old <= 0 or new <= 0 or abs(new - old) < 1e-6:
+        return res
+    k = new / old
+    w = dict(res["workout"])
+    w["DistanceKm"] = round(new, 3)
+    mv = _fit_num(w.get("MovingMinutes"), 0.0)
+    w["PaceSec"] = round(mv * 60 / new, 1) if new > 0 else ""
+    for key in ("MaxPaceSec",):
+        v = _fit_num(w.get(key))
+        if np.isfinite(v) and v > 0:
+            w[key] = round(v / k, 1)
+    st = _fit_num(w.get("AvgStrideM"))
+    if np.isfinite(st):
+        w["AvgStrideM"] = round(st * k, 3)
+    laps = res.get("laps")
+    if laps is not None and not laps.empty:
+        laps = laps.copy()
+        d = pd.to_numeric(laps["DistanceKm"], errors="coerce") * k
+        laps["DistanceKm"] = d.round(3)
+        mvl = pd.to_numeric(laps["MovingMinutes"], errors="coerce")
+        laps["PaceSec"] = (mvl * 60 / d).round(1).where(d > 0, "")
+    out = dict(res)
+    out["workout"] = w
+    out["laps"] = laps if laps is not None else res.get("laps")
+    out["rescaled"] = round(k, 4)
+    return out
+
+
+def parse_zone_sec(txt) -> list[float]:
+    """'28|35|3478|778|0|0|0' → [28, 35, 3478, 778, 0, 0, 0]"""
+    if txt is None or (isinstance(txt, float) and not np.isfinite(txt)):
+        return []
+    t = str(txt).strip()
+    if not t or t.lower() in ("nan", "none", "<na>"):
+        return []
+    out = []
+    for p in t.split("|"):
+        try:
+            v = float(p)
+        except ValueError:
+            v = 0.0
+        out.append(v if np.isfinite(v) else 0.0)
+    return out
+
+
+def watch_intensity(df_work: pd.DataFrame, days: int = 90) -> dict:
+    """시계가 **직접 잰** 존 체류 시간으로 낸 강도 분포.
+
+    지금까지의 강도 분포는 훈련의 *평균* 심박으로 존을 하나 고르는 추정이라,
+    강약이 섞인 인터벌이 통째로 중간 존에 들어가 버렸습니다. .fit 파일에는
+    시계가 초보다 촘촘하게 재서 존별로 더해 둔 실제 시간이 들어 있습니다.
+
+    FIT 규격상 time_in_hr_zone 은 0번이 'Z1 아래', 1~5번이 Z1~Z5 입니다.
+    존 경계는 시기에 따라 달라질 수 있지만(프로필을 바꾸면), 존 번호의 뜻은
+    그대로라 그대로 더해도 됩니다 — Connect 화면과 같은 방식입니다.
+
+    반환: {"low","mid","high","minutes","n","n_total"} · 실측이 없으면 {}
+    """
+    if df_work is None or df_work.empty or "WatchZoneSec" not in df_work.columns:
+        return {}
+    d = df_work
+    if days and "WorkoutDate" in d.columns:
+        # 날짜가 문자로 들어올 수도 있어 여기서 직접 맞춥니다
+        _dt = pd.to_datetime(d["WorkoutDate"], errors="coerce")
+        _cut = _dt.max() - pd.Timedelta(days=int(days))
+        d = d[_dt >= _cut]
+    if d.empty:
+        return {}
+    tot = np.zeros(7)
+    n = 0
+    for v in d["WatchZoneSec"]:
+        z = parse_zone_sec(v)
+        if not z or sum(z) <= 0:
+            continue
+        z = (z + [0.0] * 7)[:7]
+        tot += np.array(z, dtype=float)
+        n += 1
+    if n == 0 or tot.sum() <= 0:
+        return {}
+    low = tot[0] + tot[1] + tot[2]        # Z1 아래 + Z1 + Z2
+    mid = tot[3] + tot[4]                 # Z3 + Z4
+    high = tot[5] + tot[6]                # Z5 이상
+    s = low + mid + high
+    return {"low": round(float(low) / float(s) * 100, 1),
+            "mid": round(float(mid) / float(s) * 100, 1),
+            "high": round(float(high) / float(s) * 100, 1),
+            "minutes": {f"Z{i}": round(float(tot[i]) / 60, 1) for i in range(1, 6)},
+            "below": round(float(tot[0]) / 60, 1),
+            "n": n, "n_total": int(len(d))}
+
+
+# ── 이미 있는 훈련과 .fit 파일 맞추기 ─────────────────────────────────────
+# 예전에 손으로 넣은 기록은 8.00km / 50분처럼 어림수인 경우가 많습니다.
+# 날짜·거리·시간이 **정확히** 같아야만 같은 훈련으로 보면, 같은 러닝이
+# 두 줄로 들어가 버립니다. 그래서 여기서는 느슨하게 맞추되, 애매하면
+# 자동으로 처리하지 않고 사람에게 넘깁니다.
+FIT_MATCH_DIST = 0.08      # 거리 8% 또는
+FIT_MATCH_DIST_ABS = 0.5   # 0.5km 안쪽
+FIT_MATCH_DUR = 0.08       # 시간 8% 또는
+FIT_MATCH_DUR_ABS = 4.0    # 4분 안쪽
+
+# 시계가 더 정확한 값 — '교체'에서 덮어씁니다
+FIT_HARD_FIELDS = [
+    "DistanceKm", "DurationMinutes", "MovingMinutes", "PaceSec", "MaxPaceSec",
+    "AvgHeartRate", "MaxHeartRate", "AvgPower", "NormPower",
+    "AvgCadence", "MaxCadence", "ElevationGainM", "ElevLossM", "Temperature",
+    "AerobicTE", "AnaerobicTE", "PrimaryBenefit", "TrainingLoad", "Calories",
+    "AvgGCTms", "AvgStrideM", "AvgVertOscCm", "AvgVertRatioPct",
+    "DecouplingPct", "GctDriftPct", "WatchZoneSec", "WatchZoneBounds",
+    "Surface", "RPE",
+]
+# 사람이 적은 것 — 어떤 모드에서도 건드리지 않습니다
+FIT_KEEP_FIELDS = ["WorkoutID", "ProjectID", "ShoeID", "Notes",
+                   "LegFatigue", "CardioFatigue", "SourceKey"]
+
+
+def _fit_blank(v) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, float) and not np.isfinite(v):
+        return True
+    return str(v).strip() in ("", "nan", "None", "<NA>", "0", "0.0", "-", "—")
+
+
+def fit_match(w: dict, df_work: pd.DataFrame) -> dict:
+    """이 .fit 이 기존 훈련 중 어느 것인지 찾습니다.
+
+    반환: {"status": "new"|"one"|"many", "row": Series|None, "why": str,
+           "n": 후보 수}
+      · new  — 같은 날 비슷한 훈련이 없음 → 새로 추가
+      · one  — 하나만 걸림 → 채우기/교체 가능
+      · many — 여러 개가 걸림 → **자동 처리하지 않습니다** (사람이 고르도록)
+    """
+    if df_work is None or df_work.empty or not w.get("WorkoutDate"):
+        return {"status": "new", "row": None, "why": "", "n": 0}
+    d = df_work.copy()
+    day = pd.to_datetime(d.get("WorkoutDate"), errors="coerce").dt.strftime("%Y-%m-%d")
+    same = d[day == str(w["WorkoutDate"])[:10]]
+    if same.empty:
+        return {"status": "new", "row": None, "why": "같은 날 기록 없음", "n": 0}
+    km = _num(w.get("DistanceKm"), np.nan)
+    mn = _num(w.get("DurationMinutes"), np.nan)
+    cand = []
+    for _, r in same.iterrows():
+        rk = _num(r.get("DistanceKm"), np.nan)
+        rm = _num(r.get("DurationMinutes"), np.nan)
+        if not np.isfinite(rk) or not np.isfinite(rm) or rk <= 0 or rm <= 0:
+            continue
+        dk, dm = abs(rk - km), abs(rm - mn)
+        ok_k = dk <= FIT_MATCH_DIST_ABS or (km > 0 and dk / km <= FIT_MATCH_DIST)
+        ok_m = dm <= FIT_MATCH_DUR_ABS or (mn > 0 and dm / mn <= FIT_MATCH_DUR)
+        if ok_k and ok_m:
+            cand.append(((dk / max(km, 0.1)) + (dm / max(mn, 0.1)), r, dk, dm))
+    if not cand:
+        return {"status": "new", "row": None,
+                "why": f"같은 날 기록 {len(same)}건이 있지만 거리·시간이 많이 다름",
+                "n": 0}
+    cand.sort(key=lambda x: x[0])
+    _, row, dk, dm = cand[0]
+    why = (f"{str(row.get('WorkoutDate'))[:10]} 기록과 맞음 "
+           f"(거리 {_num(row.get('DistanceKm'), 0):.2f}→{km:.2f}km, "
+           f"시간 {_num(row.get('DurationMinutes'), 0):.1f}→{mn:.1f}분)")
+    if len(cand) > 1:
+        return {"status": "many", "row": row, "n": len(cand),
+                "why": f"같은 날 비슷한 기록이 {len(cand)}건 — 직접 확인하세요"}
+    return {"status": "one", "row": row, "why": why, "n": 1}
+
+
+def _fit_same(a, b) -> bool:
+    """같은 값인가 — 150 과 150.0 은 같습니다."""
+    if str(a).strip() == str(b).strip():
+        return True
+    fa, fb = _num(a, np.nan), _num(b, np.nan)
+    if np.isfinite(fa) and np.isfinite(fb):
+        return abs(fa - fb) < 0.005
+    return False
+
+
+def fit_plan(w: dict, old: pd.Series, mode: str, wtype: str = "") -> dict:
+    """무엇을 어떻게 바꿀지 미리 정리합니다 — 저장 전에 그대로 보여 줍니다.
+
+    mode: "fill"(빈 칸만) | "replace"(시계 값으로 교체)
+    반환: {"changes": DataFrame[항목, 지금, 파일, 결과], "values": dict}
+    """
+    rows, vals = [], {}
+    fields = [c for c in w if not c.startswith("_") and c not in FIT_KEEP_FIELDS]
+    for c in fields:
+        new = w.get(c)
+        if _fit_blank(new) and c not in ("DecouplingPct", "GctDriftPct"):
+            continue
+        cur = old.get(c, "") if old is not None else ""
+        if c == "WorkoutType":
+            new = wtype or new
+        blank = _fit_blank(cur)
+        if mode == "fill":
+            if not blank:
+                continue
+            act = "채움"
+        else:
+            if c not in FIT_HARD_FIELDS and c != "WorkoutType":
+                if not blank:
+                    continue
+                act = "채움"
+            elif _fit_same(cur, new):
+                continue
+            else:
+                act = "채움" if blank else "바꿈"
+        vals[c] = new
+        rows.append({"항목": c, "지금": ("(빈칸)" if blank else str(cur)[:24]),
+                     "파일": str(new)[:24], "결과": act})
+    return {"changes": pd.DataFrame(rows), "values": vals}
