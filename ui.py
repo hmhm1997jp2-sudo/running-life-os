@@ -22,6 +22,7 @@ import sys
 import unicodedata
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 # ---------------------------------------------------------------------------
 # 기기 / 테마 감지
@@ -70,6 +71,48 @@ def mode_switch(container=None) -> None:
         st.rerun()
 
 
+# 스트림릿은 테마를 바꾸는 파이썬 API가 없습니다. 대신 스트림릿 자신이
+# 고른 테마를 브라우저 localStorage 의 이 키에 넣어 두고 다음 접속 때 읽습니다.
+# 같은 키에 값을 써 주고 새로고침하면, 우리 CSS만이 아니라 **표·입력칸 같은
+# 스트림릿 기본 위젯까지** 전부 그 테마로 바뀝니다.
+_THEME_KEY = "stActiveTheme-/-v2"
+_THEME_VALS = {"auto": "System", "light": "Light", "dark": "Dark"}
+
+
+def set_theme(choice: str) -> None:
+    """'auto' | 'light' | 'dark' 로 바꾸고 새로고침합니다."""
+    val = _THEME_VALS.get(choice, "System")
+    components.html(
+        "<script>try{"
+        f"window.parent.localStorage.setItem('{_THEME_KEY}', JSON.stringify('{val}'));"
+        "window.parent.location.reload();"
+        "}catch(e){}</script>", height=0)
+
+
+def theme_switch(container=None) -> None:
+    """밝게 / 어둡게 / 자동 고르기.
+
+    지금 적용된 테마가 무엇인지는 서버가 알 수 있지만(‘밝게’인지 ‘어둡게’인지),
+    그것이 **직접 고른 것인지 시스템을 따라간 것인지는** 알 수 없습니다.
+    그래서 고른 값을 보여주는 대신 **지금 보이는 화면**에 표시를 답니다.
+    """
+    c = container or st
+    cur = "dark" if is_dark() else "light"
+    opts = ["☀️ 밝게", "🌙 어둡게", "자동"]
+    pick = c.radio("테마", opts, index=1 if cur == "dark" else 0,
+                   horizontal=True, label_visibility="collapsed",
+                   key="ui_theme_radio")
+    # '자동'은 밝게/어둡게 중 하나로 풀리므로, 값만 비교하면 새로고침이
+    # 끝없이 반복됩니다 → **직전에 고른 값과 달라졌을 때만** 적용합니다.
+    # (새로고침하면 세션이 비므로 첫 화면에서는 아무 일도 하지 않습니다)
+    prev = st.session_state.get("_theme_pick")
+    st.session_state["_theme_pick"] = pick
+    if prev is not None and pick != prev:
+        set_theme("dark" if pick.startswith("🌙")
+                  else "auto" if pick == "자동" else "light")
+    c.caption("‘자동’은 폰·PC의 다크 모드 설정을 따라갑니다.")
+
+
 def boot() -> None:
     """앱 시작 시 1회 — 기기·테마 결정 후 해당 CSS 주입."""
     if "ui_mode" not in st.session_state:
@@ -81,27 +124,35 @@ def boot() -> None:
 # ---------------------------------------------------------------------------
 # 디자인 토큰
 # ---------------------------------------------------------------------------
+# 색이 '칙칙하다'는 건 대개 채도가 아니라 **대비가 없다**는 뜻입니다.
+# 예전 토큰은 바탕(#f4f5f7)과 카드(#fff)가 거의 같은 밝기라 카드가 떠 보이지
+# 않았고, 보조 글씨(#8a93a1)가 너무 옅어 화면 전체가 회색으로 읽혔습니다.
+# · 바탕을 한 단계 내리고 살짝 파랗게 → 흰 카드가 떠 보입니다
+# · 보조 글씨를 두 단계 진하게 → 읽히는 글자가 늘어납니다
+# · 회색 톤을 전부 중립회색에서 **푸른 회색**으로 → 같은 명도라도 덜 탁합니다
 _LIGHT = """
-  --bg:#f4f5f7;        --surface:#ffffff;     --surface-2:#f8f9fb;
-  --line:#e6e8ec;      --line-soft:#f0f1f4;
-  --text:#14181f;      --text-2:#5b6472;      --text-3:#8a93a1;
-  --accent:#3b5bdb;    --accent-2:#eef1fd;    --accent-ink:#3b5bdb;
-  --ok:#0d8a5f;        --ok-bg:rgba(13,138,95,.10);
-  --warn:#b2670a;      --warn-bg:rgba(178,103,10,.12);
-  --bad:#cc3b34;       --bad-bg:rgba(204,59,52,.10);
-  --shadow-sm:0 1px 2px rgba(20,24,31,.05);
-  --shadow-md:0 1px 2px rgba(20,24,31,.05), 0 10px 26px -20px rgba(20,24,31,.45);
+  --bg:#eaeef5;        --surface:#ffffff;     --surface-2:#f1f5fb;
+  --line:#dbe2ed;      --line-soft:#e9eef6;
+  --text:#101622;      --text-2:#48546a;      --text-3:#6f7b8e;
+  --accent:#3355e0;    --accent-2:#e6ebfe;    --accent-ink:#2c47c7;
+  --accent-soft:#c3cef6;
+  --ok:#0a8f5f;        --ok-bg:rgba(10,143,95,.12);
+  --warn:#bd6a00;      --warn-bg:rgba(189,106,0,.14);
+  --bad:#d43a30;       --bad-bg:rgba(212,58,48,.12);
+  --shadow-sm:0 1px 2px rgba(16,22,34,.06);
+  --shadow-md:0 1px 2px rgba(16,22,34,.06), 0 12px 28px -18px rgba(16,22,34,.40);
 """
 _DARK = """
-  --bg:#0d1016;        --surface:#151a23;     --surface-2:#1b212c;
-  --line:#252c39;      --line-soft:#1e2531;
-  --text:#e8ecf3;      --text-2:#9aa4b4;      --text-3:#6e7787;
-  --accent:#8aa4ff;    --accent-2:#1c2340;    --accent-ink:#a9bcff;
-  --ok:#4ec99a;        --ok-bg:rgba(78,201,154,.12);
-  --warn:#e0a75a;      --warn-bg:rgba(224,167,90,.14);
-  --bad:#f1736c;       --bad-bg:rgba(241,115,108,.12);
-  --shadow-sm:0 1px 2px rgba(0,0,0,.35);
-  --shadow-md:0 1px 2px rgba(0,0,0,.35), 0 12px 28px -20px rgba(0,0,0,.9);
+  --bg:#0a0e16;        --surface:#161d29;     --surface-2:#1e2633;
+  --line:#2a3342;      --line-soft:#222a37;
+  --text:#eaeff7;      --text-2:#a6b1c2;      --text-3:#818d9f;
+  --accent:#8aa4ff;    --accent-2:#1f2a4d;    --accent-ink:#b3c3ff;
+  --accent-soft:#3b4870;
+  --ok:#4ed3a1;        --ok-bg:rgba(78,211,161,.14);
+  --warn:#eab05f;      --warn-bg:rgba(234,176,95,.16);
+  --bad:#f77a72;       --bad-bg:rgba(247,122,114,.14);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.4);
+  --shadow-md:0 1px 2px rgba(0,0,0,.4), 0 14px 30px -18px rgba(0,0,0,.95);
 """
 
 _FONT = """
@@ -227,6 +278,29 @@ details[data-testid="stExpander"], .stExpander {
 }
 .stExpander summary p { font-weight:600 !important; color:var(--text) !important; }
 
+/* ── 스트림릿 기본 강조색(빨강) 덮기 ─────────────────
+   config.toml 에 [theme] 를 두면 사용자가 고른 밝게/어둡게가 무시되므로
+   거기서 primaryColor 를 못 씁니다. 대신 기본 빨강이 새어 나오는 위젯을
+   여기서 강조색으로 칠합니다. */
+[data-testid="stSlider"] [role="slider"],
+[data-testid="stSlider"] div[style*="translate(-50%"] { background:var(--accent) !important; }
+/* 채워진 구간은 인라인 그라데이션(빨강)이라 색을 덮어쓸 수 없습니다 —
+   그 칸만 색상환을 돌려 강조색 계열로 옮깁니다. */
+[data-testid="stSlider"] div[role="group"] > div > div:first-child {
+  filter:hue-rotate(228deg) saturate(.95); }
+[data-testid="stSlider"] [data-baseweb="slider"] > div > div > div:not([role="slider"]) {
+  background:var(--accent) !important; }
+[data-testid="stSliderThumbValue"], [data-testid="stSliderThumbValue"] * {
+  color:var(--accent) !important; }
+[data-testid="stSliderTickBarMin"], [data-testid="stSliderTickBarMax"] {
+  color:var(--text-3) !important; }
+[data-baseweb="checkbox"] span[data-checked="true"],
+[data-testid="stCheckbox"] input:checked + div,
+[data-testid="stToggle"] input:checked + div { background:var(--accent) !important; }
+[data-testid="stProgress"] div[role="progressbar"] > div {
+  background:var(--accent) !important; }
+a, .stMarkdown a { color:var(--accent-ink) !important; }
+
 /* ── 표 ─────────────────────────────────────────────── */
 [data-testid="stDataFrame"] { border-radius:var(--r-md); overflow:hidden;
                               border:1px solid var(--line); }
@@ -295,8 +369,10 @@ div[data-testid="stAlert"] { border-radius:var(--r-md); border:1px solid var(--l
                       border-color .16s; }
 .rl-tile:hover { transform:translateY(-2px); box-shadow:var(--shadow-md);
                  border-color:var(--text-3); }
+/* 모든 타일에 색 띠를 둡니다 — 톤이 없는 타일까지 흰 상자로만 두면
+   화면 전체가 회색으로 읽힙니다. 기본은 옅은 강조색, 상태가 있으면 그 색. */
 .rl-tile::before { content:""; position:absolute; left:0; top:0; bottom:0; width:3px;
-                   background:transparent; }
+                   background:var(--accent-soft); }
 .rl-tile.ok::before   { background:var(--ok); }
 .rl-tile.warn::before { background:var(--warn); }
 .rl-tile.bad::before  { background:var(--bad); }
@@ -315,7 +391,8 @@ div[data-testid="stAlert"] { border-radius:var(--r-md); border:1px solid var(--l
 
 /* ── 히어로 (오늘 상태) ─────────────────────────────── */
 .rl-hero { border:1px solid var(--line); border-radius:var(--r-lg); padding:18px 20px 16px;
-           background:linear-gradient(135deg, var(--accent-2) 0%, var(--surface) 62%);
+           background:linear-gradient(118deg, var(--accent-2) 0%,
+                                      var(--surface-2) 46%, var(--surface) 82%);
            box-shadow:var(--shadow-sm); margin-bottom:4px; }
 .rl-hero .t { font-size:2.05rem; font-weight:780; letter-spacing:-.035em; line-height:1.1; }
 .rl-hero .s { color:var(--text-2); font-size:.86rem; margin:6px 0 0; line-height:1.55; }
