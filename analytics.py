@@ -505,6 +505,30 @@ def _recent(zoned: pd.DataFrame, days: int) -> pd.DataFrame:
                  & (zoned["DurationMinutes"] > 0)]
 
 
+def polarized_verdict(low: float, mid: float, high: float,
+                      have_data: bool = True) -> tuple[str, str]:
+    """저/중/고강도 비율 → (판정 문구, 톤).
+
+    '무엇이 가장 많이 어긋났는지'로 결정합니다. (예전 코드는 저강도가 낮기만
+    하면 고강도가 5%여도 '고강도 편중'이라고 했습니다)
+    추정값과 시계 실측값이 같은 잣대로 판정되도록 여기 한 곳에 모아 둡니다.
+    """
+    if not have_data:
+        return "데이터 부족", ""
+    if low >= 78 and mid <= 12:
+        return "✅ 폴라라이즈드 (80/20 준수)", "ok"
+    if high >= 20:
+        return "🚨 고강도 편중 — 이지런 비중을 늘릴 것", "bad"
+    if mid >= 25:
+        return ("⚠️ 회색지대(Gray Zone) 과다 — 이지런은 더 느리게, "
+                "포인트 훈련은 더 확실하게"), "warn"
+    if low >= 78:
+        return "피라미드형 — 중강도 비중이 조금 높습니다", "ok"
+    if low >= 65:
+        return "무난 — 저강도를 조금 더 늘리면 좋습니다", "warn"
+    return "⚠️ 저강도 부족 — 이지런 비중을 늘릴 것", "warn"
+
+
 def intensity_distribution(zoned: pd.DataFrame, model: str = DEFAULT_ZONE_MODEL,
                            days: int = 90) -> dict:
     """
@@ -530,23 +554,8 @@ def intensity_distribution(zoned: pd.DataFrame, model: str = DEFAULT_ZONE_MODEL,
     pol = {k: (round(v / tot * 100, 1) if tot else 0.0)
            for k, v in [("low", low), ("mid", mid), ("high", high)]}
 
-    # 판정은 '무엇이 가장 많이 어긋났는지'로 결정합니다.
-    # (예전 코드는 저강도가 낮기만 하면 고강도가 5%여도 '고강도 편중'이라고 했습니다)
-    if tot == 0:
-        verdict, vtone = "데이터 부족", ""
-    elif pol["low"] >= 78 and pol["mid"] <= 12:
-        verdict, vtone = "✅ 폴라라이즈드 (80/20 준수)", "ok"
-    elif pol["high"] >= 20:
-        verdict, vtone = "🚨 고강도 편중 — 이지런 비중을 늘릴 것", "bad"
-    elif pol["mid"] >= 25:
-        verdict, vtone = ("⚠️ 회색지대(Gray Zone) 과다 — 이지런은 더 느리게, "
-                          "포인트 훈련은 더 확실하게"), "warn"
-    elif pol["low"] >= 78:
-        verdict, vtone = "피라미드형 — 중강도 비중이 조금 높습니다", "ok"
-    elif pol["low"] >= 65:
-        verdict, vtone = "무난 — 저강도를 조금 더 늘리면 좋습니다", "warn"
-    else:
-        verdict, vtone = "⚠️ 저강도 부족 — 이지런 비중을 늘릴 것", "warn"
+    verdict, vtone = polarized_verdict(pol["low"], pol["mid"], pol["high"],
+                                       have_data=tot > 0)
 
     return {
         "model": model,
@@ -870,6 +879,93 @@ def body_summary(bd: pd.DataFrame, recent: int = 4) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ── 체중 감시 ───────────────────────────────────────────────────────────────
+# 지구력 종목의 감량 속도 권고는 '주 0.5~1%를 넘기지 말 것'입니다 (ACSM·IOC).
+# 4주로 환산하면 2%가 권장 상한, 4%면 그 두 배입니다.
+BODY_LOSS_WARN = 2.0      # 4주 환산 −2% — 권장 상한을 넘김
+BODY_LOSS_BAD = 4.0       # 4주 환산 −4% — 주 1%를 넘김
+BODY_WINDOW_DAYS = 28
+BODY_MIN_SPAN = 12        # 이보다 짧은 간격이면 수분 변동과 구분이 안 됩니다
+BODY_STALE_DAYS = 42
+
+
+def _body_change(bd: pd.DataFrame, col: str, days: int = BODY_WINDOW_DAYS):
+    """col 의 최근 값과 days 일쯤 전 값을 견줍니다 → (변화%, 실제 간격일, 이전값).
+
+    측정 간격이 들쭉날쭉해서, 창(window) 밖의 가장 가까운 기록을 기준으로
+    잡고 변화율을 28일로 환산해 돌려줍니다. 견줄 것이 없으면 (nan, 0, nan).
+    """
+    if bd is None or bd.empty or col not in bd.columns:
+        return np.nan, 0, np.nan
+    s = bd.dropna(subset=[col])[["MeasureDate", col]]
+    if len(s) < 2:
+        return np.nan, 0, np.nan
+    last_d, cur = s["MeasureDate"].iloc[-1], float(s[col].iloc[-1])
+    older = s[s["MeasureDate"] <= last_d - pd.Timedelta(days=days)]
+    ref = older.iloc[-1] if not older.empty else s.iloc[0]
+    span = int((last_d - ref["MeasureDate"]).days)
+    prev = float(ref[col])
+    if span < BODY_MIN_SPAN or prev <= 0:
+        return np.nan, span, np.nan
+    raw = (cur - prev) / prev * 100.0
+    pct = raw * (BODY_WINDOW_DAYS / span)
+    return pct, span, raw
+
+
+def _volume_holding(weekly: pd.DataFrame, weeks: int = 4) -> bool:
+    """최근 4주 거리가 그 앞 4주의 90% 이상인가 — '훈련량이 안 줄었다'."""
+    if weekly is None or weekly.empty or "Distance" not in weekly.columns:
+        return True                      # 알 수 없으면 '줄지 않았다'로 봅니다
+    d = pd.to_numeric(weekly["Distance"], errors="coerce").dropna()
+    if len(d) < weeks + 1:
+        return True
+    cur = float(d.tail(weeks).sum())
+    prev = float(d.tail(weeks * 2).head(weeks).sum())
+    return prev <= 0 or cur >= prev * 0.9
+
+
+def body_alerts(bd: pd.DataFrame, weekly: pd.DataFrame = None,
+                today=None) -> list[dict]:
+    """체중·체성분에서 '지금 신경 쓸 것'만 뽑아 오늘의 체크포인트에 올립니다.
+
+    훈련량이 줄지 않은 채로 체중이 권장 속도보다 빠르게 빠지면 먹는 양이
+    모자란다는 신호일 수 있습니다. 체중이 '느는' 것은 경고하지 않습니다 —
+    그 자체로는 좋고 나쁨이 없는 값이라서입니다.
+    """
+    if bd is None or bd.empty:
+        return []
+    out = []
+    pct, span, raw = _body_change(bd, "WeightKg")
+    if np.isfinite(pct) and pct <= -BODY_LOSS_WARN:
+        hold = _volume_holding(weekly)
+        mus, _, mraw = _body_change(bd, "SkeletalMuscleKg")
+        hard = pct <= -BODY_LOSS_BAD
+        tail = ("훈련량은 줄지 않았습니다 — 먹는 양을 돌아볼 때입니다."
+                if hold else "훈련량도 같이 줄어 있습니다.")
+        if np.isfinite(mraw) and mraw <= -1.0:
+            tail = (f"골격근량도 {mraw:+.1f}% 같이 내려갔습니다 — "
+                    "지방만 빠지는 상황이 아닙니다.")
+            hard = True
+        # 측정 간격이 4주와 크게 다를 때만 환산값을 덧붙입니다
+        conv = ("" if abs(span - BODY_WINDOW_DAYS) <= 4
+                else f" (4주 환산 {pct:+.1f}%)")
+        out.append({
+            "level": "error" if hard else "warning",
+            "msg": (f"⚖️ 체중이 최근 {span}일 동안 {raw:+.1f}% 내려갔습니다{conv}. "
+                    + tail),
+        })
+    if today is not None or not bd.empty:
+        t = pd.Timestamp(today) if today is not None else pd.Timestamp(datetime.now())
+        gap = int((t.normalize() - bd["MeasureDate"].iloc[-1].normalize()).days)
+        if gap > BODY_STALE_DAYS:
+            out.append({
+                "level": "info",
+                "msg": (f"⚖️ 체중을 마지막으로 잰 지 {gap}일 됐습니다. "
+                        "같은 요일·같은 조건으로 한 번 재 두면 흐름이 이어집니다."),
+            })
+    return out
+
+
 # ── 부상 · 통증 ─────────────────────────────────────────────────────────────
 INJURY_SITES = ["무릎", "아킬레스건", "발목", "족저근막/발바닥", "정강이(정강이통)",
                 "종아리", "햄스트링", "허벅지 앞(대퇴사두)", "고관절/엉덩이",
@@ -987,9 +1083,10 @@ _TREND_DATE = {"daily": "StatusDate", "metric": "MetricDate", "workout": "Workou
 
 
 def _trend_vals(s: pd.Series, col: str) -> pd.Series:
-    """0은 '미입력'으로 봅니다 — 단, 음수가 정상인 지표(TSB)는 0만 뺍니다."""
+    """0은 '미입력'으로 봅니다 — 단, 음수가 정상인 지표(TSB)는 0도 진짜 값이라
+    그대로 둡니다(빈 칸은 어차피 NaN으로 들어옵니다)."""
     v = pd.to_numeric(s, errors="coerce")
-    return v.where(v != 0) if col in TREND_SIGNED else v.where(v > 0)
+    return v if col in TREND_SIGNED else v.where(v > 0)
 
 
 def _trend_frame(src, daily, metric, workouts, body=None):
@@ -1450,12 +1547,24 @@ def lap_best_efforts(df_laps: pd.DataFrame, categories=None,
 
 
 def detect_prs(df_work: pd.DataFrame, tol: float = 0.03,
-               df_laps: pd.DataFrame = None) -> pd.DataFrame:
+               df_laps: pd.DataFrame = None,
+               exclude_treadmill: bool = True) -> pd.DataFrame:
     """거리별 최고 기록 자동 추출.
     · 훈련 전체 거리가 목표와 ±3% 안에 드는 기록
     · (df_laps가 있으면) 훈련 안의 가장 빠른 연속 구간 — 1km만 따로 뛸 필요 없음
-    둘 중 빠른 쪽을 채택하고 어디서 나온 기록인지 함께 돌려줍니다."""
+    둘 중 빠른 쪽을 채택하고 어디서 나온 기록인지 함께 돌려줍니다.
+
+    exclude_treadmill=True면 노면이 '트레드밀'인 훈련은 후보에서 뺍니다 —
+    러닝머신 거리는 기계가 벨트 속도로 환산한 값이라 기계마다 다릅니다.
+    (VDOT 계산은 이 값과 무관하게 항상 트레드밀을 뺍니다)
+    """
     d = prepare_workouts(df_work)
+    if exclude_treadmill and not d.empty and "Surface" in d.columns:
+        d = d[d["Surface"].astype(str).str.strip() != "트레드밀"]
+        if (df_laps is not None and not df_laps.empty
+                and "WorkoutID" in df_laps.columns):
+            df_laps = df_laps[df_laps["WorkoutID"].astype(str)
+                              .isin(set(d["WorkoutID"].astype(str)))]
     laps_best = lap_best_efforts(df_laps) if df_laps is not None else {}
 
     def _wlabel(row=None, wid=None):
@@ -1913,7 +2022,9 @@ def latest_garmin(df_daily: pd.DataFrame, df_metrics: pd.DataFrame) -> dict:
     weekly_fields = ["VO2Max", "FitnessAge", "EnduranceScore", "HillScore",
                      "FocusAnaerobic", "FocusHighAerobic", "FocusLowAerobic",
                      "Pred5K", "Pred10K", "PredHalf", "PredFull",
-                     "LTPace", "LTHR", "WeightKg", "BodyFatPct"]
+                     "LTPace", "LTHR", "WeightKg", "BodyFatPct",
+                     # RUNALYZE에서 옮겨 적은 값 — 가민 값과 나란히 견주려고 같이 꺼냅니다
+                     "RzTSB", "RzMarathonShape", "RzEffVO2max"]
     for f in daily_fields:
         v, dt, ts = _latest(df_daily, "StatusDate", f)
         out[f], out[f + "_date"], out[f + "_at"] = v, dt, ts
@@ -2343,20 +2454,30 @@ def race_pred_summary(trend: pd.DataFrame) -> pd.DataFrame:
 
 
 def garmin_vs_computed(g: dict, summary: dict, evo2: dict, vdot: float) -> list[dict]:
-    """가민이 준 값과 이 앱이 기록으로 계산한 값을 나란히 비교.
-    둘이 크게 어긋나면 입력 오류이거나 훈련 성격이 한쪽에 치우쳤다는 신호입니다."""
+    """가민 · 이 앱의 계산 · RUNALYZE 세 값을 한 줄에 놓고 견줍니다.
+
+    셋이 크게 어긋나면 입력 오류이거나, 훈련 성격이 한쪽에 치우쳐서
+    한 방식이 그걸 못 따라간 것입니다. 각 줄에는 '이 숫자가 뜻하는 것'(뜻)과
+    '갈릴 때 어떻게 읽는지'(note)를 같이 담습니다.
+    """
     rows = []
 
     gv = _num(g.get("VO2Max"), np.nan)
     cv = _num(evo2.get("value"), np.nan) if evo2 else np.nan
-    if np.isfinite(gv) or np.isfinite(cv):
+    rv = _num(g.get("RzEffVO2max"), np.nan)
+    if np.isfinite(gv) or np.isfinite(cv) or np.isfinite(rv):
         diff = (cv - gv) if (np.isfinite(gv) and np.isfinite(cv)) else np.nan
         rows.append({
             "항목": "VO₂max",
             "가민": f"{gv:.0f}" if np.isfinite(gv) else "—",
             "계산": f"{cv:.1f}" if np.isfinite(cv) else "—",
+            "런얼라이즈": f"{rv:.1f}" if np.isfinite(rv) else "—",
             "차이": f"{diff:+.1f}" if np.isfinite(diff) else "—",
-            "note": "계산값은 심박 여유율 기준이라 이지런 위주면 낮게 나옵니다.",
+            "뜻": "같은 심박으로 얼마나 빨리 달릴 수 있나 — 심폐 능력의 크기입니다. "
+                 "단위는 셋 다 ml/kg/min이라 숫자를 그대로 견줄 수 있습니다.",
+            "note": "‘계산’은 최근 60일 훈련을 심박 여유율로 환산한 값이라 "
+                    "이지런 위주면 낮게 나옵니다. 런얼라이즈와 계산값은 방식이 "
+                    "같아서, 둘이 벌어지면 넣은 훈련 범위가 서로 다른 것입니다.",
         })
 
     gr = _num(g.get("LoadRatio"), np.nan)
@@ -2366,8 +2487,43 @@ def garmin_vs_computed(g: dict, summary: dict, evo2: dict, vdot: float) -> list[
             "항목": "급성:만성 부하비",
             "가민": f"{gr:.2f}" if np.isfinite(gr) else "—",
             "계산": f"{ca:.2f}" if ca is not None else "—",
+            "런얼라이즈": "—",
             "차이": f"{(ca - gr):+.2f}" if (ca is not None and np.isfinite(gr)) else "—",
+            "뜻": "최근 1주 부하 ÷ 최근 4주 부하. 1보다 크면 평소보다 더 하고 있다는 "
+                 "뜻이고, 0.8~1.3이 흔히 쓰는 안전 구간입니다.",
             "note": "가민은 자체 부하 단위, 계산값은 TRIMP 기준이라 절대값보다 추세를 보세요.",
+        })
+
+    ct = summary.get("tsb") if summary else None
+    rt = _num(g.get("RzTSB"), np.nan)
+    if ct is not None or np.isfinite(rt):
+        rows.append({
+            "항목": "폼 (TSB)",
+            "가민": "—",
+            # 두 값은 부하 단위가 달라 자릿수부터 다릅니다. 숫자만 나란히 두면
+            # 견주게 되니, 칸 안에 단위를 붙여 애초에 못 견주게 해 둡니다.
+            "계산": f"{ct:+.0f} (TRIMP)" if ct is not None else "—",
+            "런얼라이즈": f"{rt:+.1f} (Rz)" if np.isfinite(rt) else "—",
+            "차이": "—",
+            "뜻": ("체력(오래 쌓인 부하) − 피로(최근 부하). 양수면 몸이 쉬어 있고, "
+                  "음수면 피로가 앞서 있습니다. 레이스는 보통 양수에서 잡습니다."
+                  + (f" 계산 기준 지금 상태는 ‘{summary.get('form_text')}’입니다."
+                     if summary and summary.get("form_text") else "")),
+            "note": "두 값은 부하 단위가 달라 <b>숫자끼리는 견줄 수 없습니다</b> "
+                    "(자릿수부터 다릅니다) — 부호와 방향(오르는 중인가 내리는 "
+                    "중인가)만 같이 보세요. 가민에는 이에 해당하는 값이 없습니다.",
+        })
+
+    rm = _num(g.get("RzMarathonShape"), np.nan)
+    if np.isfinite(rm):
+        rows.append({
+            "항목": "Marathon Shape",
+            "가민": "—", "계산": "—",
+            "런얼라이즈": f"{rm:.0f}%", "차이": "—",
+            "뜻": "지금 몸으로 마라톤 거리를 감당할 준비가 얼마나 됐나 — "
+                 "긴 훈련이 충분히 쌓였는지를 봅니다. 속도가 아니라 지구력 쪽 지표입니다.",
+            "note": "런얼라이즈에만 있는 값입니다. 페이스가 좋아도 롱런이 모자라면 "
+                    "이 값은 안 올라갑니다.",
         })
 
     gp = parse_time_str(g.get("Pred10K"))
@@ -2377,7 +2533,9 @@ def garmin_vs_computed(g: dict, summary: dict, evo2: dict, vdot: float) -> list[
             "항목": "10K 예상 기록",
             "가민": time_str(gp) if np.isfinite(gp) else "—",
             "계산": time_str(cp) if np.isfinite(cp) else "—",
+            "런얼라이즈": "—",
             "차이": (f"{(cp - gp):+.0f}초" if (np.isfinite(gp) and np.isfinite(cp)) else "—"),
+            "뜻": "지금 상태로 10km를 전력으로 뛰면 나올 기록입니다.",
             "note": "계산값은 실제 최고 기록 기반, 가민은 추정 기반입니다.",
         })
     return rows
@@ -3158,11 +3316,24 @@ def watch_intensity(df_work: pd.DataFrame, days: int = 90) -> dict:
     mid = tot[3] + tot[4]                 # Z3 + Z4
     high = tot[5] + tot[6]                # Z5 이상
     s = low + mid + high
-    return {"low": round(float(low) / float(s) * 100, 1),
-            "mid": round(float(mid) / float(s) * 100, 1),
-            "high": round(float(high) / float(s) * 100, 1),
+    _lo = round(float(low) / float(s) * 100, 1)
+    _mi = round(float(mid) / float(s) * 100, 1)
+    _hi = round(float(high) / float(s) * 100, 1)
+    _v, _vt = polarized_verdict(_lo, _mi, _hi)
+    _min = {f"Z{i}": round(float(tot[i]) / 60, 1) for i in range(1, 6)}
+    _below = round(float(tot[0]) / 60, 1)
+    if _below > 0:
+        _min = {"Z1 아래": _below, **_min}
+    _tm = sum(_min.values())
+    return {"low": _lo, "mid": _mi, "high": _hi,
             "minutes": {f"Z{i}": round(float(tot[i]) / 60, 1) for i in range(1, 6)},
-            "below": round(float(tot[0]) / 60, 1),
+            # 차트용 — 'Z1 아래'까지 포함해 합이 100%가 되게 둡니다
+            "bar_minutes": _min,
+            "bar_pct": {k: (round(v / _tm * 100, 1) if _tm else 0.0)
+                        for k, v in _min.items()},
+            "total_minutes": round(_tm, 1),
+            "verdict": _v, "verdict_tone": _vt,
+            "below": _below,
             "n": n, "n_total": int(len(d))}
 
 
