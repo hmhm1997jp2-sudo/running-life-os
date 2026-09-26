@@ -1,6 +1,10 @@
-# Streamlit 기본 테마 — base 를 지정하지 않으면 사용자의 시스템 설정(밝게/어둡게)을 따릅니다.
-# ui.py 가 실제 적용된 테마를 읽어 CSS를 맞추므로 위젯과 배경이 어긋나지 않습니다.
+# Streamlit 설정 — 저장소의 .streamlit/config.toml 로 올리세요.
+#
+# [theme] 의 base 를 지정하지 않으면 **기기(폰·PC)의 밝게/어둡게 설정을 따라갑니다.**
+# 항상 어둡게(또는 항상 밝게) 쓰고 싶으면 아래 base 줄의 # 을 지우세요.
 [theme]
+# base = "dark"      # 항상 어둡게
+# base = "light"     # 항상 밝게
 primaryColor = "#3b5bdb"
 font = "sans serif"
 
