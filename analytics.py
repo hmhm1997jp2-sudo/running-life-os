@@ -769,6 +769,8 @@ TREND_METRICS = [
     ("sleep",     "수면 점수",        "daily",  ["SleepScore"],       "line", ",d", (0, 100)),
     ("recovery",  "회복 시간 (h)",    "daily",  ["RecoveryTimeHr"],   "bar",  ",d", None),
     ("int_day",   "고강도 분 (당일)",  "daily",  ["IntensityMinutesDay"], "bar", ",d", None),
+    ("intweek",   "고강도 분 (이번 주·월~일)", "daily", ["IntensityMinWeek"],
+     "line", ",d", None),
     ("int7",      "고강도 분 (7일 누적)", "daily", ["IntensityMin7"],   "line", ",d", None),
     ("intensity", "고강도 분 (가민 주간·예전 입력)", "daily", ["IntensityMinutes"],
      "bar",  ",d", None),
@@ -1920,11 +1922,14 @@ def _measured_ts(df: pd.DataFrame, date_col: str, col: str = "MeasuredAt") -> pd
 
 def add_intensity_rolling(gdv: pd.DataFrame,
                           date_col: str = "StatusDate") -> pd.DataFrame:
-    """‘당일 고강도 분’에서 **최근 7일 누적**과 **이번 주(월~일) 누적**을 만듭니다.
+    """‘당일 고강도 분’에서 **이번 주(월~일) 누적**과 **최근 7일 누적**을 만듭니다.
 
-    가민 시계의 주간 고강도는 롤링 7일이라 매일 값이 달라집니다. 그걸 매일
-    받아 적으면 요일 효과 때문에 추이가 읽히지 않습니다 — 그래서 **당일 값만
-    적고 누적은 여기서 계산**합니다. 당일 값이 없는 날은 0으로 봅니다.
+    가민의 주간 고강도 목표(기본 150분)는 **월요일에 초기화되는 월~일 합**
+    입니다. 그래서 시계·Connect와 숫자를 맞추려면 IntensityMinWeek 를 쓰고,
+    요일에 따라 뚝 떨어지지 않는 추세를 보려면 IntensityMin7 을 씁니다.
+
+    둘 다 **당일 값 하나**에서 계산하므로 주간 합계를 따로 받아 적을 필요가
+    없습니다. 당일 값이 없는 날은 0으로 봅니다.
     """
     if gdv is None or gdv.empty or date_col not in gdv.columns:
         return gdv
