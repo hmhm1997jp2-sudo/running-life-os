@@ -657,7 +657,7 @@ DAILY_TIMING_HELP = """
 | **단기 부하** | 훈련이 들어오면 올라가고, 쉬면 조금씩 내려갑니다 |
 | Readiness · Body Battery · HRV · 수면 점수 · 안정시 심박 · 최근 수면 · 최근 스트레스 | 밤사이 계산돼 **그날 고정** |
 | 만성 부하 · Training Status | 하루 단위로만 바뀝니다 |
-| **고강도 분** | **어제 하루치**만 적으면 7일 누적은 앱이 굴려서 계산합니다 |
+| **고강도 분** | **어제 하루치**만 적으면 이번 주(월~일)·최근 7일 누적을 앱이 둘 다 계산합니다 |
 
 그래서 아침에 한 번만 적어도 놓치는 게 거의 없습니다. 움직이는 두 개도 `기준 시간`을
 함께 저장해 두면, 대시보드가 **회복 시간을 ‘지금 기준 남은 시간’으로 다시 계산**해서
@@ -2030,8 +2030,16 @@ if SEC == "today" and SCR == "summary":
                     StatusDate=pd.to_datetime(df_daily["StatusDate"], errors="coerce")
                 ).sort_values("StatusDate")
                 if not df_daily.empty else df_daily)
+            # 가민의 주간 고강도 목표(기본 150분)는 **월요일에 초기화되는
+            # 월~일 합**입니다 → 시계에 뜨는 숫자와 맞추려고 이쪽을 앞에 둡니다.
+            # 최근 7일 롤링은 요일에 안 끊기는 추세용으로 아래 줄에 남깁니다.
+            # 둘 다 '당일 고강도 분' 하나에서 계산하므로 주간 합계는 따로
+            # 받아 적을 필요가 없습니다.
+            _intw_pts = (hist_series(_int, "StatusDate", "IntensityMinWeek")
+                         if (_int is not None and not _int.empty) else [])
             _int7_pts = (hist_series(_int, "StatusDate", "IntensityMin7")
                          if (_int is not None and not _int.empty) else [])
+            _intw_v = float(_intw_pts[-1][1]) if _intw_pts else np.nan
             _int7_v = float(_int7_pts[-1][1]) if _int7_pts else np.nan
             ui.head("📊 가민 · 트레이닝 부하", "본 시점의 값 · " + seen_at(_load_keys))
             _ch_v = pd.to_numeric(G.get("ChronicLoad"), errors="coerce")
@@ -2094,16 +2102,19 @@ if SEC == "today" and SCR == "summary":
                 {"label": "단기 부하 (7일 누적)", "value": gv("AcuteLoad", "{:,.0f}"),
                  "sub": _al_s, "tone": _al_t,
                  "spark": hist_series(df_daily, "StatusDate", "AcuteLoad")},
-                {"label": "고강도 (최근 7일)",
-                 "value": f"{_int7_v:,.0f}" if np.isfinite(_int7_v) else "—",
+                {"label": "고강도 (이번 주 · 월~일)",
+                 "value": f"{_intw_v:,.0f}" if np.isfinite(_intw_v) else "—",
                  "unit": "분",
-                 "sub": (f"당일 {gv('IntensityMinutesDay', '{:,.0f}')}분 · {_im_s}"
-                         if gv("IntensityMinutesDay", "{:,.0f}") != "—" and _im_s
-                         else f"당일 {gv('IntensityMinutesDay', '{:,.0f}')}분"
-                         if gv("IntensityMinutesDay", "{:,.0f}") != "—"
-                         else "‘당일 고강도 분’을 넣으면 계산됩니다"),
-                 "tone": _im_t,
-                 "spark": _int7_pts},
+                 "sub": (" · ".join(x for x in (
+                     f"최근 7일 {_int7_v:,.0f}분" if np.isfinite(_int7_v) else "",
+                     f"당일 {gv('IntensityMinutesDay', '{:,.0f}')}분"
+                     if gv("IntensityMinutesDay", "{:,.0f}") != "—" else "",
+                     _im_s) if x)
+                     or "‘당일 고강도 분’을 넣으면 계산됩니다"),
+                 # 150분은 가민 기본 주간 목표입니다 (WHO 권고와 같은 값)
+                 "tone": ("ok" if np.isfinite(_intw_v) and _intw_v >= 150
+                          else _im_t),
+                 "spark": _intw_pts},
             ], per_row_pc=2)
             card_link("📈 추이 · ⌚ 가민 추이", go=("trend", "garmin"))
 
@@ -2308,9 +2319,11 @@ if SEC == "today":
                 a_im = grid_at(m3, 3, 4).number_input(
                     "고강도 분 (당일)", 0, 500, 0, key="am_im",
                     help="**그날 하루치**입니다 — 훈련을 하면 늘어나니 훈련 뒤에 "
-                         "다시 넣으면 됩니다. 주간 누적은 이 값을 7일 굴려 앱이 "
-                         "계산합니다 (가민의 주간 값은 롤링 7일이라 매일 달라져서, "
-                         "그걸 받아 적으면 추이가 읽히지 않습니다).")
+                         "다시 넣으면 됩니다. **주간 합계는 적을 필요가 없습니다** — "
+                         "이 값 하나로 ‘이번 주(월~일) 누적’과 ‘최근 7일 누적’을 "
+                         "앱이 둘 다 계산합니다. 가민의 주간 목표(기본 150분)는 "
+                         "월요일에 초기화되는 월~일 합이라, 대시보드에는 그쪽을 "
+                         "먼저 보여줍니다.")
                 _ts_opts = ["(그대로 두기)"] + list(ana.TRAINING_STATUS.keys())
                 ts = st.selectbox(
                     "Training Status", _ts_opts,
@@ -2398,7 +2411,7 @@ if SEC == "today":
              ("SleepScore", "numopt", "수면 점수", None),
              ("RestingHR", "numopt", "안정시 심박", None),
              ("IntensityMinutesDay", "numopt", "고강도 분 (당일)", None),
-             ("IntensityMinutes", "numopt", "고강도 분 (가민 주간·예전 입력)", None),
+             ("IntensityMinutes", "numopt", "고강도 분 (주간 합계 · 예전 입력 · 지금은 안 씀)", None),
              ("SleepHistory", "select", "최근 수면 점수", SLEEP_HIST_OPTS),
              ("StressHistory", "select", "최근 스트레스", STRESS_HIST_OPTS),
              ("Notes", "area", "메모", None)],
@@ -5029,7 +5042,9 @@ if SEC == "trend":
             st.info("심박이 기록된 훈련이 아직 없습니다.")
         else:
             with ui.card("ztbl"):
-                ui.head(f"📋 존별 상세 (최근 {days_z}일)")
+                ui.head(f"📋 존별 상세 (최근 {days_z}일)",
+                        "시간·비중은 훈련 <b>평균 심박</b>으로 낸 값입니다 — "
+                        "존별 거리·페이스를 내려면 이 방법뿐입니다")
                 if ui.is_mobile():
                     ui.item_list([(f"{r['존']} — {r['비중(%)']}%",
                                    f"{r['심박(bpm)']} bpm · {r['시간']} · {r['거리(km)']}km · "
@@ -5057,8 +5072,32 @@ if SEC == "trend":
                                          color=C["muted"]).encode(
                              text=alt.Text("비중(%):Q", format=".1f")))
                         .properties(height=ui.chart_height(220, 200)), width="stretch")
+                    st.caption("위 막대는 훈련의 **평균 심박**으로 존을 하나 골라 낸 "
+                               "값입니다 — 존별 **거리·페이스**를 내려면 이 방법밖에 "
+                               "없어서입니다. 실제 존 체류 시간과는 다릅니다.")
                     inten_z = ana.intensity_distribution(zoned, ZM, days_z)
-                    if inten_z:
+                    # '📊 계산 통계 → 강도 분포'와 **같은 값**이 나와야 합니다.
+                    # 그쪽은 시계 실측을 쓰는데 여기만 추정을 쓰면, 같은 지표가
+                    # 화면마다 다른 숫자로 보입니다.
+                    _wz = ana.watch_intensity(df_w, days_z)
+                    if _wz:
+                        st.markdown("<p class='rl-sub' style='margin:12px 0 0'>"
+                                    "⌚ <b>시계 실측</b> 기준 저·중·고강도</p>",
+                                    unsafe_allow_html=True)
+                        ui.rows([("저강도 (Z1~Z2)", f"{_wz['low']}%"),
+                                 ("중강도 (Z3~Z4)", f"{_wz['mid']}%"),
+                                 ("고강도 (Z5)", f"{_wz['high']}%")])
+                        st.markdown(ui.pill(_wz["verdict"], _wz["verdict_tone"]),
+                                    unsafe_allow_html=True)
+                        if inten_z:
+                            _p = inten_z["polarized_pct"]
+                            st.caption(f"위 막대(평균 심박 기준)로는 "
+                                       f"저 {_p['low']}% · 중 {_p['mid']}% · "
+                                       f"고 {_p['high']}% 입니다 — 강약이 섞인 훈련이 "
+                                       "많을수록 둘이 벌어집니다.")
+                        with st.expander("❓ 이 판정은 어떻게 나오나요"):
+                            st.markdown(INTENSITY_HELP)
+                    elif inten_z:
                         p = inten_z["polarized_pct"]
                         ui.rows([("저강도 (Z1~Z2)", f"{p['low']}%"),
                                  ("중강도 (Z3~Z4)", f"{p['mid']}%"),
@@ -5095,8 +5134,16 @@ if SEC == "trend":
                                 axis=alt.Axis(labelAngle=0, labelOverlap="greedy")),
                         y=alt.Y("분:Q", title="분", stack="normalize",
                                 axis=alt.Axis(format="%")),
-                        color=alt.Color("존:N", sort=zone_order(ZM), title=None,
-                                        scale=zone_scale(ZM)),
+                        # 범례를 막대 바로 위에 가로로 깔면 '막대마다 붙은 이름'
+                        # 처럼 읽혀서 어긋나 보입니다 → 오른쪽 세로 범례로.
+                        color=alt.Color("존:N", sort=zone_order(ZM), title="존",
+                                        scale=zone_scale(ZM),
+                                        legend=alt.Legend(orient="right",
+                                                          direction="vertical",
+                                                          symbolType="square",
+                                                          symbolStrokeWidth=0,
+                                                          symbolSize=110,
+                                                          offset=8, titlePadding=6)),
                         tooltip=[alt.Tooltip("주:O", title="주"), alt.Tooltip("존:N", title="존"),
                                  alt.Tooltip("분:Q", title="분", format=".0f")]
                     ).properties(height=ui.chart_height(280, 240)), width="stretch")
