@@ -75,18 +75,48 @@ def mode_switch(container=None) -> None:
 # 고른 테마를 브라우저 localStorage 의 이 키에 넣어 두고 다음 접속 때 읽습니다.
 # 같은 키에 값을 써 주고 새로고침하면, 우리 CSS만이 아니라 **표·입력칸 같은
 # 스트림릿 기본 위젯까지** 전부 그 테마로 바뀝니다.
-_THEME_KEY = "stActiveTheme-/-v2"
 _THEME_VALS = {"auto": "System", "light": "Light", "dark": "Dark"}
+
+# 설정 파일에 이 중 하나라도 값이 있으면 스트림릿은 그걸 '고정 테마'로 보고,
+# 사용자가 고른 밝게/어둡게를 무시합니다(저장도 하지 않습니다).
+_THEME_CFG_KEYS = ["theme.base", "theme.primaryColor", "theme.font",
+                   "theme.backgroundColor", "theme.secondaryBackgroundColor",
+                   "theme.textColor"]
+
+
+def theme_config_conflicts() -> list[str]:
+    """config.toml 의 [theme] 설정 중 실제로 값이 들어간 항목 이름."""
+    out = []
+    for k in _THEME_CFG_KEYS:
+        try:
+            if st.get_option(k):
+                out.append(k.split(".", 1)[1])
+        except Exception:
+            pass
+    return out
 
 
 def set_theme(choice: str) -> None:
-    """'auto' | 'light' | 'dark' 로 바꾸고 새로고침합니다."""
+    """'auto' | 'light' | 'dark' 로 바꾸고 새로고침합니다.
+
+    스트림릿은 테마를 바꾸는 파이썬 API가 없습니다. 대신 스트림릿 자신이
+    고른 테마를 브라우저 localStorage 에 넣어 두고 다음 접속 때 읽으므로,
+    같은 자리에 값을 써 주고 새로고침합니다. 키 이름에 **주소의 경로**가
+    들어가므로(앱이 하위 경로에 얹히는 경우가 있습니다) 경로는 하드코딩하지
+    않고 브라우저에서 직접 읽습니다.
+    """
     val = _THEME_VALS.get(choice, "System")
     components.html(
         "<script>try{"
-        f"window.parent.localStorage.setItem('{_THEME_KEY}', JSON.stringify('{val}'));"
-        "window.parent.location.reload();"
-        "}catch(e){}</script>", height=0)
+        "var w=window.parent,p=w.location.pathname;"
+        "var k='stActiveTheme-'+p+'-v2';"
+        f"w.localStorage.setItem(k, JSON.stringify('{val}'));"
+        # 예전 버전·다른 경로로 저장된 값이 남아 가리는 일이 없게 같이 지웁니다
+        "w.localStorage.removeItem('stActiveTheme');"
+        "w.localStorage.removeItem('stActiveTheme-'+p);"
+        "w.localStorage.removeItem('stActiveTheme-'+p+'-v1');"
+        "w.location.reload();"
+        "}catch(e){console.error('theme',e);}</script>", height=0)
 
 
 def theme_switch(container=None) -> None:
@@ -110,7 +140,18 @@ def theme_switch(container=None) -> None:
     if prev is not None and pick != prev:
         set_theme("dark" if pick.startswith("🌙")
                   else "auto" if pick == "자동" else "light")
-    c.caption("‘자동’은 폰·PC의 다크 모드 설정을 따라갑니다.")
+    bad = theme_config_conflicts()
+    if bad:
+        c.error(
+            "**고른 테마가 적용되지 않습니다.** `.streamlit/config.toml` 의 "
+            f"`[theme]` 에 값이 남아 있어서입니다 (`{'`, `'.join(bad)}`). "
+            "스트림릿은 설정 파일에 테마가 지정돼 있으면 그걸 고정으로 보고 "
+            "여기서 고른 값을 무시합니다. **`[theme]` 블록을 통째로 지우고** "
+            "GitHub에 올린 뒤 앱을 재시작하세요 — 색은 전부 `ui.py` 가 "
+            "칠하므로 지워도 보이는 색은 그대로입니다.")
+    else:
+        c.caption("‘자동’은 폰·PC의 다크 모드 설정을 따라갑니다. "
+                  "고른 값은 이 브라우저에 저장됩니다.")
 
 
 def boot() -> None:
