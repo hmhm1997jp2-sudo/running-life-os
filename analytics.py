@@ -1776,11 +1776,21 @@ def build_alerts(df_work: pd.DataFrame, df_shoes: pd.DataFrame,
             alerts.append({"level": "warning",
                            "msg": f"주간 거리 전주 대비 +{float(w['WoW%']):.0f}% — 10% 룰 초과."})
 
-    if intensity and intensity.get("polarized_pct"):
+    # 강도 분포는 시계 실측(.fit)이 있으면 그쪽이 맞습니다. 체크포인트만
+    # 평균 심박 추정으로 판정하면, 같은 지표가 카드에서는 65%인데 여기서는
+    # 42%로 뜨는 일이 생깁니다 — 어느 쪽인지 문구에 적어 둡니다.
+    _w = watch_intensity(df_work, 90)
+    if _w:
+        low, _src, _tot = _w["low"], "시계 실측", 1e9
+    elif intensity and intensity.get("polarized_pct"):
         low = intensity["polarized_pct"]["low"]
-        if low < 75 and intensity.get("total_minutes", 0) > 300:
-            alerts.append({"level": "warning",
-                           "msg": f"저강도 비중 {low}% — 80/20 미달. 이지런을 늘릴 것."})
+        _src, _tot = "평균 심박 추정", intensity.get("total_minutes", 0)
+    else:
+        low, _src, _tot = None, "", 0
+    if low is not None and low < 75 and _tot > 300:
+        alerts.append({"level": "warning",
+                       "msg": (f"저강도 비중 {low}% ({_src} 기준) — 80/20 미달. "
+                               "이지런을 늘릴 것.")})
 
     # 신발 마모
     d = prepare_workouts(df_work)
