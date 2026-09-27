@@ -154,8 +154,8 @@ _ZONES_DARK = ["#5e9dea", "#2f6fcc", "#17a882", "#b07d18", "#e05f59"]
 # 차트 크롬(배경·눈금·글자) — 배경 한 단계 위의 헤어라인만 남깁니다.
 _CHROME_LIGHT = {"surface": "#ffffff", "grid": "#e0e7f2", "axis": "#ccd5e3",
                  "muted": "#6f7b8e", "ink": "#101622"}
-_CHROME_DARK = {"surface": "#161d29", "grid": "#2a3342", "axis": "#36414f",
-                "muted": "#818d9f", "ink": "#eaeff7"}
+_CHROME_DARK = {"surface": "#1a2130", "grid": "#313c51", "axis": "#3f4b62",
+                "muted": "#8b97a9", "ink": "#eef2f9"}
 
 
 def viz_colors() -> dict:
@@ -168,8 +168,8 @@ def viz_colors() -> dict:
         "primary": pal[0], "accent": pal[1], "teal": pal[2], "amber": pal[3],
         "pink": pal[4], "green": pal[5], "violet": pal[6], "red": pal[7],
         # 순차(연속) 스케일 — 한 가지 색의 밝기 변화만 씁니다
-        "seq": ["#e3edfc", pal[0]] if not dark else ["#1c2740", pal[0]],
-        "pale": "#e9eff8" if not dark else "#1e2633",
+        "seq": ["#e3edfc", pal[0]] if not dark else ["#212c47", pal[0]],
+        "pale": "#e9eff8" if not dark else "#2b3547",
         "slate": "#6f7b8e",
     })
     return ch
@@ -657,7 +657,7 @@ DAILY_TIMING_HELP = """
 | **단기 부하** | 훈련이 들어오면 올라가고, 쉬면 조금씩 내려갑니다 |
 | Readiness · Body Battery · HRV · 수면 점수 · 안정시 심박 · 최근 수면 · 최근 스트레스 | 밤사이 계산돼 **그날 고정** |
 | 만성 부하 · Training Status | 하루 단위로만 바뀝니다 |
-| **고강도 분** | **어제 하루치**만 적으면 이번 주(월~일)·최근 7일 누적을 앱이 둘 다 계산합니다 |
+| **고강도 분** | 하루가 끝나야 확정됩니다 — **훈련 뒤**에서 그날 최종값만 적으면 이번 주(월~일)·최근 7일 누적을 앱이 둘 다 계산합니다 |
 
 그래서 아침에 한 번만 적어도 놓치는 게 거의 없습니다. 움직이는 두 개도 `기준 시간`을
 함께 저장해 두면, 대시보드가 **회복 시간을 ‘지금 기준 남은 시간’으로 다시 계산**해서
@@ -1078,6 +1078,38 @@ def garmin_trend_charts(panels, h_pc=112, h_mb=94):
                 tooltip=tip)
         elif mark == "bar":
             ch = base.mark_bar(color=C["primary"], size=14).encode(x=x, y=y, tooltip=tip)
+        elif p["key"] == "intweek":
+            # 가민 Connect의 '중고강도 운동시간'과 같은 모양 — 주마다 월요일에
+            # 0으로 리셋되는 값이라 ①계단으로 그리고 ②주가 바뀌는 자리에서
+            # 선을 끊습니다. 매끈한 선으로 이으면 리셋이 그냥 '뚝 떨어진 날'로
+            # 보여서, 주 단위라는 게 안 읽힙니다.
+            d = d.copy()
+            d["주"] = (pd.to_datetime(d["날짜"])
+                      .dt.to_period("W-SUN").dt.start_time)
+            # 목표를 넘긴 주는 초록 — 가민이 달성 주를 초록으로 칠하는 것과 같습니다
+            _goal = 150.0
+            _hit = d.groupby("주")["값"].transform("max") >= _goal
+            d["달성"] = np.where(_hit, f"{_goal:.0f}분 달성", "진행 중")
+            _dom = [x_ for x_ in (f"{_goal:.0f}분 달성", "진행 중")
+                    if (d["달성"] == x_).any()]
+            _rng = [C["teal"] if x_.endswith("달성") else C["primary"] for x_ in _dom]
+            _b = alt.Chart(d)
+            _col = (alt.value(_rng[0]) if len(_dom) <= 1 else
+                    alt.Color("달성:N", title=None,
+                              scale=alt.Scale(domain=_dom, range=_rng),
+                              legend=alt.Legend(orient="top", direction="horizontal",
+                                                symbolType="stroke", symbolSize=90)))
+            _tipw = [alt.Tooltip("날짜:T", title="날짜", format="%Y-%m-%d"),
+                     alt.Tooltip("주:T", title="주 시작(월)", format="%Y-%m-%d"),
+                     alt.Tooltip("값:Q", title=p["label"], format=fmt)]
+            _goal_rule = alt.Chart(pd.DataFrame({"y": [_goal]})).mark_rule(
+                color=C["slate"], strokeDash=[4, 4], strokeWidth=1.2).encode(
+                y=alt.Y("y:Q", scale=ysc))
+            ch = (_goal_rule
+                  + _b.mark_line(interpolate="step-after", strokeWidth=2).encode(
+                      x=x, y=y, detail="주:T", color=_col, tooltip=_tipw)
+                  + _b.mark_point(size=45, filled=True).encode(
+                      x=x, y=y, color=_col, tooltip=_tipw))
         else:
             ch = base.mark_line(color=C["primary"], point=True,
                                 strokeWidth=2).encode(x=x, y=y, tooltip=tip)
@@ -1093,8 +1125,12 @@ def garmin_trend_charts(panels, h_pc=112, h_mb=94):
                 color=C["slate"], strokeDash=[4, 4]).encode(y=alt.Y("y:Q", scale=ysc))
             ch = zero + ch
 
-        charts.append(ch.properties(height=ui.chart_height(h_pc, h_mb),
-                                    title=panel_title(p["label"])))
+        # 주간 고강도는 0에서 목표선까지 오르내리는 모양이 핵심이라, 다른 칸과
+        # 같은 높이로 두면 계단이 납작해져서 주 구분이 안 보입니다.
+        _hm = 1.7 if p["key"] == "intweek" else 1.0
+        charts.append(ch.properties(
+            height=ui.chart_height(int(h_pc * _hm), int(h_mb * _hm)),
+            title=panel_title(p["label"])))
     return charts or None
 
 
@@ -2240,8 +2276,10 @@ if SEC == "today":
                            "화면 왼쪽 위의 **‘…에 업데이트됨’ 시각**을 `기준 시간`에 "
                            "적으면 됩니다. 훈련마다 붙는 **운동 부하**는 여기가 "
                            "아니라 ‘➕ 훈련 입력 / 📥 파일 가져오기’에서 넣습니다.  \n"
-                           "오후에 훈련을 하면 부하·회복·고강도가 달라집니다 — "
-                           "그때는 위에서 **훈련 뒤**를 고르세요.")
+                           "훈련을 하면 **부하·회복 시간**이 달라지고, **고강도 분**은 "
+                           "하루가 끝나야 확정됩니다 — 그때는 위에서 **훈련 뒤**를 "
+                           "고르세요. 아침과 훈련 뒤 입력은 **같은 날짜 한 줄로 "
+                           "합쳐집니다** (줄이 두 개 생기지 않습니다).")
             if _pm:
                 st.info("훈련을 하면 **단기 부하 · 회복 시간 · 고강도 분**이 "
                         "달라집니다 — 그 셋만 다시 넣으세요. 아침에 적은 "
@@ -2296,9 +2334,14 @@ if SEC == "today":
                         help="가민 준비 상태 화면의 ‘최근 스트레스’(최근 3일) 판정.")
                     st.markdown(
                         "<p class='rl-sub' style='margin:12px 0 2px'>📌 같은 화면에 "
-                        "함께 떠 있는 값 — 하루 동안 <b>움직이는 건 회복 시간과 "
-                        "단기 부하</b> 둘뿐입니다. 위 <code>기준 시간</code> 시점에 "
-                        "보이는 대로 넣으면 됩니다</p>",
+                        "함께 떠 있는 값 — 이 중 <b>단기 부하 · 회복 시간</b>은 "
+                        "훈련을 하면 하루 안에도 달라집니다. 위 "
+                        "<code>기준 시간</code> 시점에 보이는 대로 넣고, 훈련한 "
+                        "뒤에 맨 위에서 <b>훈련 뒤</b>를 골라 다시 넣으세요. "
+                        "<b>고강도 분</b>은 하루가 끝나야 확정되는 값이라 "
+                        "<b>훈련 뒤</b>에만 칸이 나옵니다 — 훈련을 안 한 날도 "
+                        "자기 전에 <b>훈련 뒤</b>로 그것만 넣으면 됩니다 "
+                        "(만성 부하는 하루 단위로만 바뀝니다)</p>",
                         unsafe_allow_html=True)
                 m3 = ui.cols(4, 2, keep_row=True)
                 a_ac = grid_at(m3, 0, 4).number_input(
@@ -2316,14 +2359,17 @@ if SEC == "today":
                     help="훈련 종료부터 줄어드는 카운트다운입니다. 위 기준 시간부터 "
                          "이만큼 남았다고 보고, 대시보드에서는 ‘지금 기준 남은 시간’으로 "
                          "다시 계산해 보여줍니다.")
-                a_im = grid_at(m3, 3, 4).number_input(
+                # 고강도 분은 하루가 끝나야 확정되는 값입니다. 아침 8시에 보면
+                # 대개 0이라 적을 것이 없고, 적어봐야 그날 값이 아닙니다 →
+                # '훈련 뒤'(= 하루 마감) 모드에서만 받습니다.
+                a_im = (grid_at(m3, 3, 4).number_input(
                     "고강도 분 (당일)", 0, 500, 0, key="am_im",
-                    help="**그날 하루치**입니다 — 훈련을 하면 늘어나니 훈련 뒤에 "
-                         "다시 넣으면 됩니다. **주간 합계는 적을 필요가 없습니다** — "
-                         "이 값 하나로 ‘이번 주(월~일) 누적’과 ‘최근 7일 누적’을 "
-                         "앱이 둘 다 계산합니다. 가민의 주간 목표(기본 150분)는 "
-                         "월요일에 초기화되는 월~일 합이라, 대시보드에는 그쪽을 "
-                         "먼저 보여줍니다.")
+                    help="**그날 하루치 최종값**입니다. **주간 합계는 적을 필요가 "
+                         "없습니다** — 이 값 하나로 ‘이번 주(월~일) 누적’과 "
+                         "‘최근 7일 누적’을 앱이 둘 다 계산합니다. 가민의 주간 "
+                         "목표(기본 150분)는 월요일에 초기화되는 월~일 합이라, "
+                         "대시보드에는 그쪽을 먼저 보여줍니다.")
+                        if _pm else 0)
                 _ts_opts = ["(그대로 두기)"] + list(ana.TRAINING_STATUS.keys())
                 ts = st.selectbox(
                     "Training Status", _ts_opts,
@@ -5193,8 +5239,14 @@ if SEC == "body":
                     "인바디를 봤을 땐 아래 칸을 함께 채우세요")
             with st.form("f_body", clear_on_submit=True):
                 b0 = ui.cols(3, 1, keep_row=True)
-                b_date = b0[0].date_input("측정일", ana.last_monday(), key="bd_date",
-                                          help="기본값은 이번 주 월요일입니다.")
+                # 예전에는 '이번 주 월요일'을 기본값으로 뒀습니다. 주 단위로
+                # 묶어 보기엔 편했지만, 일요일에 잰 값이 월요일 날짜로 저장되고
+                # 한 주 내내 같은 날짜가 떠 있어 '고장 난 칸'처럼 보였습니다.
+                # 잰 날을 그대로 적는 쪽이 맞습니다.
+                b_date = b0[0].date_input("측정일", today_local(), key="bd_date",
+                                          help="잰 날을 그대로 넣으세요. 매주 "
+                                               "**같은 요일·같은 조건**에 재면 "
+                                               "주마다 비교가 됩니다.")
                 b_w = b0[1 % len(b0)].number_input(
                     "체중 (kg)", 0.0, 200.0, 0.0, 0.1, format="%g", key="bd_w",
                     help="기상 직후, 화장실 다녀온 뒤, 같은 옷차림으로 재면 "
