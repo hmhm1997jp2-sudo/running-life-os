@@ -177,23 +177,30 @@ _LIGHT = """
   --text:#101622;      --text-2:#48546a;      --text-3:#6f7b8e;
   --accent:#3355e0;    --accent-2:#e6ebfe;    --accent-ink:#2c47c7;
   --accent-soft:#c3cef6;
+  --tile:#ffffff;
   --ok:#0a8f5f;        --ok-bg:rgba(10,143,95,.12);
   --warn:#bd6a00;      --warn-bg:rgba(189,106,0,.14);
   --bad:#d43a30;       --bad-bg:rgba(212,58,48,.12);
   --shadow-sm:0 1px 2px rgba(16,22,34,.06);
   --shadow-md:0 1px 2px rgba(16,22,34,.06), 0 12px 28px -18px rgba(16,22,34,.40);
 """
+# 어두운 화면은 **그림자가 안 보입니다.** 검정 바탕에 검정 그림자를 깔아 봐야
+# 아무 일도 일어나지 않아서, 밝은 테마에서 그림자가 하던 '카드가 떠 있다'는
+# 신호가 통째로 사라집니다. 그래서 어두운 테마의 깊이는 **면의 밝기 차이와
+# 테두리**로만 만듭니다 — 바탕을 순검정에서 띄우고, 카드를 그보다 밝게,
+# 타일을 한 단계 더 밝게, 테두리는 눈에 보일 만큼 올립니다.
 _DARK = """
-  --bg:#0a0e16;        --surface:#161d29;     --surface-2:#1e2633;
-  --line:#2a3342;      --line-soft:#222a37;
-  --text:#eaeff7;      --text-2:#a6b1c2;      --text-3:#818d9f;
-  --accent:#8aa4ff;    --accent-2:#1f2a4d;    --accent-ink:#b3c3ff;
-  --accent-soft:#3b4870;
-  --ok:#4ed3a1;        --ok-bg:rgba(78,211,161,.14);
-  --warn:#eab05f;      --warn-bg:rgba(234,176,95,.16);
-  --bad:#f77a72;       --bad-bg:rgba(247,122,114,.14);
-  --shadow-sm:0 1px 2px rgba(0,0,0,.4);
-  --shadow-md:0 1px 2px rgba(0,0,0,.4), 0 14px 30px -18px rgba(0,0,0,.95);
+  --bg:#10151f;        --surface:#1a2130;     --surface-2:#232c3d;
+  --tile:#242e40;
+  --line:#37435a;      --line-soft:#2b3547;
+  --text:#eef2f9;      --text-2:#aeb9ca;      --text-3:#8b97a9;
+  --accent:#8aa4ff;    --accent-2:#25325a;    --accent-ink:#b6c5ff;
+  --accent-soft:#46557f;
+  --ok:#4ed3a1;        --ok-bg:rgba(78,211,161,.16);
+  --warn:#eab05f;      --warn-bg:rgba(234,176,95,.18);
+  --bad:#f77a72;       --bad-bg:rgba(247,122,114,.16);
+  --shadow-sm:0 0 0 1px rgba(255,255,255,.02);
+  --shadow-md:0 0 0 1px rgba(255,255,255,.03), 0 18px 36px -24px rgba(0,0,0,.9);
 """
 
 _FONT = """
@@ -403,7 +410,9 @@ div[data-testid="stAlert"] { border-radius:var(--r-md); border:1px solid var(--l
             gap:12px; margin:2px 0 6px; }
 .rl-tiles.c3 { grid-template-columns:repeat(3,minmax(0,1fr)); }
 .rl-tiles.c2 { grid-template-columns:repeat(2,minmax(0,1fr)); }
-.rl-tile { position:relative; overflow:hidden; background:var(--surface);
+/* 타일은 카드 위에 얹힌 면입니다 — 어두운 테마에서는 카드와 같은 색이면
+   테두리 말고는 아무 구분이 없습니다. 그래서 한 단계 밝은 --tile 을 씁니다. */
+.rl-tile { position:relative; overflow:hidden; background:var(--tile);
            border:1px solid var(--line); border-radius:var(--r-md);
            padding:13px 15px 12px; box-shadow:var(--shadow-sm);
            transition:transform .16s cubic-bezier(.22,1,.36,1), box-shadow .16s,
@@ -506,7 +515,7 @@ _PC = """
 <style>
 /* PC에서 한 화면에 더 많이 — 2단 카드 그리드가 좁아지지 않게 폭을 넓힙니다.
    (RUNALYZE처럼 숫자를 빽빽하게 보는 쪽에 맞춘 값입니다) */
-.block-container { max-width:1440px; padding-left:2.1rem; padding-right:2.1rem; }
+.block-container { max-width:1680px; padding-left:2.1rem; padding-right:2.1rem; }
 div[data-testid="stVerticalBlockBorderWrapper"] { padding:6px 8px; }
 div[data-testid="stMetricValue"] { font-size:1.9rem !important; }
 .stTabs [data-baseweb="tab"] { height:40px; font-size:.9rem; }
